@@ -1,0 +1,33 @@
+{
+  "name": "Entrenamiento",
+  "short_name": "Entreno",
+  "description": "Registro de entrenamiento de hipertrofia con progresión, volumen semanal y pasos diarios",
+  "start_url": "./entrenamiento.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "lang": "es",
+  "categories": ["health", "fitness", "lifestyle"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
