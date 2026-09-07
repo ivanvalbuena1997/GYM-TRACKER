@@ -2,7 +2,7 @@
   "name": "Entrenamiento",
   "short_name": "Entreno",
   "description": "Registro de entrenamiento de hipertrofia con progresión, volumen semanal y pasos diarios",
-  "start_url": "./entrenamiento.html",
+  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

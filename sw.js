@@ -3,7 +3,7 @@
    volver a tener red) y "cache first" para el resto de recursos.            */
 const CACHE = "entrenamiento-v1";
 const ASSETS = [
-  "./entrenamiento.html",
+  "./index.html",
   "./manifest.webmanifest",
   "./icon-192.png",
   "./icon-512.png",
@@ -13,7 +13,7 @@ const ASSETS = [
 self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(CACHE)
-      .then((c) => c.addAll(ASSETS).catch(() => c.add("./entrenamiento.html")))
+      .then((c) => c.addAll(ASSETS).catch(() => c.add("./index.html")))
       .then(() => self.skipWaiting())
   );
 });
@@ -40,7 +40,7 @@ self.addEventListener("fetch", (e) => {
           caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
           return res;
         })
-        .catch(() => caches.match(req).then((r) => r || caches.match("./entrenamiento.html")))
+        .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
     );
     return;
   }
