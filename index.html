@@ -257,6 +257,39 @@ body.light .chart-tip{box-shadow:0 8px 24px rgba(90,80,60,.22)}
 .chart-tip .tip-row{display:flex;justify-content:space-between;gap:12px}
 .chart-tip .tip-val{font-variant-numeric:tabular-nums;font-weight:600}
 
+/* Aviso de copia de seguridad */
+.notice{display:flex;align-items:flex-start;gap:10px;margin-top:14px;padding:12px 14px;
+  border-radius:4px;background:color-mix(in srgb,var(--accent) 9%,transparent);
+  border:1px solid color-mix(in srgb,var(--accent) 28%,transparent)}
+.notice-ico{color:var(--accent);display:flex;flex-shrink:0;margin-top:1px}
+.notice-txt{font-size:12px;color:var(--text-2);line-height:1.55;flex:1;min-width:0}
+.notice-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+
+/* Temporizador de descanso */
+.rest{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom));
+  z-index:60;min-width:270px;max-width:calc(100vw - 32px);
+  background:linear-gradient(180deg,var(--surface-top),var(--surface-bot));
+  border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;
+  box-shadow:0 14px 44px rgba(0,0,0,.55);overflow:hidden}
+body.light .rest{box-shadow:0 14px 44px rgba(90,80,60,.28)}
+.rest.done{border-left-color:var(--accent);animation:restpulse .5s ease 2}
+@keyframes restpulse{0%,100%{background:linear-gradient(180deg,var(--surface-top),var(--surface-bot))}
+  50%{background:color-mix(in srgb,var(--accent) 18%,var(--surface-top))}}
+.rest-bar{height:3px;background:var(--border-soft)}
+.rest-bar>div{height:100%;background:var(--accent);transition:width .25s linear}
+.rest-row{display:flex;align-items:center;gap:12px;padding:11px 14px}
+.rest .rest-main{font-size:21px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;
+  letter-spacing:.02em}
+.rest.done{display:flex;align-items:center;gap:12px;padding:13px 14px}
+.rest.done .rest-main{font-size:15px;color:var(--accent)}
+.rest-lbl{font-size:12px;color:var(--text-muted);flex:1;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.rest-add{background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;
+  padding:5px 9px;font-size:11px;font-weight:600;flex-shrink:0}
+.rest-add:hover{color:var(--accent);border-color:var(--accent)}
+.rest-x{background:none;border:none;color:var(--text-ghost);padding:4px;display:flex;flex-shrink:0}
+.rest-x:hover{color:var(--text)}
+
 /* Empty / misc */
 .empty{display:flex;flex-direction:column;align-items:center;text-align:center;padding:56px 24px;
   border:1px dashed var(--border);border-radius:4px}
@@ -286,11 +319,13 @@ body.light .chart-tip{box-shadow:0 8px 24px rgba(90,80,60,.22)}
     </div>
     <p class="subtitle">Hipertrofia · 4 días · Dom–Mié</p>
     <div class="profiles" id="profiles"></div>
+    <div id="backupnotice"></div>
     <div id="datapanel"></div>
   </header>
   <nav id="nav"></nav>
   <main id="main"></main>
 </div>
+<div id="rest-host"></div>
 <div id="toast-host"></div>
 
 <script>
@@ -387,7 +422,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.6";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -570,6 +605,23 @@ function exportData(){
   };
 }
 
+const BACKUP_DAYS = 15;
+
+// Días desde la última copia. null = nunca se ha hecho ninguna.
+function daysSinceBackup(){
+  const t=store.get("lastBackup",null);
+  if(!t) return null;
+  return Math.floor((Date.now()-t)/86400000);
+}
+
+function backupDue(){
+  // No molestar si todavía no hay nada que perder
+  const st=backupStats();
+  if(st.sesiones===0 && st.dias===0) return false;
+  const d=daysSinceBackup();
+  return d===null || d>=BACKUP_DAYS;
+}
+
 function backupStats(){
   const profs=store.get("profiles",[])||[];
   let sesiones=0, dias=0;
@@ -590,6 +642,9 @@ function downloadBackup(){
   a.download=`gym-tracker-copia-${todayISO()}.json`;
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },1000);
+  store.set("lastBackup", Date.now());
+  S.backupDismissed=true;
+  renderBackupNotice();
   toast("Copia descargada");
 }
 
@@ -609,6 +664,116 @@ function restoreBackup(payload){
     return {ok:true, count:entries.length};
   }catch(e){ return {ok:false, error:"No se pudo escribir en el almacenamiento."}; }
 }
+
+/* ==================== Récords y 1RM ====================
+   1RM estimado con la fórmula de Epley: peso × (1 + reps/30). Permite comparar
+   series de rangos distintos (un 8x80 frente a un 12x65) en una sola cifra.
+   Pierde fiabilidad por encima de ~12 reps, así que ahí se descarta.        */
+function e1RM(weight, reps){
+  const w=parseFloat(weight)||0, r=parseFloat(reps)||0;
+  if(w<=0 || r<=0 || r>12) return 0;
+  return w * (1 + r/30);
+}
+
+// Mejor marca histórica de un ejercicio, opcionalmente ignorando una fecha
+function bestFor(exerciseId, excludeDate){
+  let best={e1rm:0, weight:0, reps:0, date:null, wBest:0, wReps:0, wDate:null};
+  S.sessions.forEach(sess=>{
+    if(excludeDate && sess.date===excludeDate) return;
+    sess.entries.forEach(e=>{
+      if(e.exerciseId!==exerciseId) return;
+      e.sets.forEach(st=>{
+        const w=parseFloat(st.weight)||0, r=parseFloat(st.reps)||0;
+        if(w<=0||r<=0) return;
+        const v=e1RM(st.weight, st.reps);
+        if(v>best.e1rm){ best.e1rm=v; best.weight=w; best.reps=r; best.date=sess.date; }
+        if(w>best.wBest){ best.wBest=w; best.wReps=r; best.wDate=sess.date; }
+      });
+    });
+  });
+  return best;
+}
+
+/* ==================== Temporizador de descanso ====================
+   Se calcula SIEMPRE por marca de tiempo (Date.now), nunca acumulando ticks.
+   Android congela los temporizadores en segundo plano, así que un contador
+   se quedaría atrasado; con marca de tiempo, al volver a la app el tiempo
+   mostrado es el real transcurrido.                                        */
+let restState = null;   // {endsAt, total, label, done}
+let restTick = null;
+
+function vibrate(pattern){
+  try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch{}
+}
+
+function startRest(seconds, label){
+  if(seconds<=0) return;
+  restState = {endsAt: Date.now() + seconds*1000, total: seconds, label: label||"", done:false};
+  if(restTick) clearInterval(restTick);
+  restTick = setInterval(tickRest, 250);
+  renderRest();
+}
+
+function stopRest(){
+  restState = null;
+  if(restTick){ clearInterval(restTick); restTick=null; }
+  renderRest();
+}
+
+function restRemaining(){
+  if(!restState) return 0;
+  return Math.max(0, Math.round((restState.endsAt - Date.now())/1000));
+}
+
+function tickRest(){
+  if(!restState) return;
+  const left = restRemaining();
+  if(left<=0 && !restState.done){
+    restState.done = true;
+    vibrate([320, 140, 320]);          // dos pulsos: se nota con el móvil en el bolsillo
+    renderRest();
+    setTimeout(()=>{ if(restState && restState.done) stopRest(); }, 12000);
+    return;
+  }
+  renderRest();
+}
+
+function fmtClock(sec){
+  const m=Math.floor(sec/60), s2=sec%60;
+  return `${m}:${String(s2).padStart(2,"0")}`;
+}
+
+function renderRest(){
+  const host=document.getElementById("rest-host");
+  if(!host) return;
+  if(!restState){ host.innerHTML=""; return; }
+  const left=restRemaining();
+  const pct=restState.total? (1 - left/restState.total)*100 : 100;
+  if(restState.done){
+    host.innerHTML=`<div class="rest done">
+      <span class="rest-main">Descanso terminado</span>
+      ${restState.label?`<span class="rest-lbl">${esc(restState.label)}</span>`:""}
+      <button class="rest-x" id="rest-close" aria-label="Cerrar">${I.x}</button>
+    </div>`;
+  }else{
+    host.innerHTML=`<div class="rest">
+      <div class="rest-bar"><div style="width:${pct}%"></div></div>
+      <div class="rest-row">
+        <span class="rest-main">${fmtClock(left)}</span>
+        ${restState.label?`<span class="rest-lbl">${esc(restState.label)}</span>`:""}
+        <button class="rest-add" id="rest-plus">+30s</button>
+        <button class="rest-x" id="rest-skip" aria-label="Saltar descanso">${I.x}</button>
+      </div>
+    </div>`;
+  }
+  const c=document.getElementById("rest-close"); if(c) c.onclick=stopRest;
+  const k=document.getElementById("rest-skip"); if(k) k.onclick=stopRest;
+  const pl=document.getElementById("rest-plus");
+  if(pl) pl.onclick=()=>{ restState.endsAt+=30000; restState.done=false; renderRest(); };
+}
+
+// Al volver del segundo plano se recalcula de inmediato
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden) renderRest(); });
 
 /* ============================ Estado ============================ */
 const S = {
@@ -752,6 +917,28 @@ function renderProfiles(){
   });
 }
 
+function renderBackupNotice(){
+  const host=document.getElementById("backupnotice");
+  if(!host) return;
+  if(S.backupDismissed || !backupDue()){ host.innerHTML=""; return; }
+  const d=daysSinceBackup();
+  const txt = d===null
+    ? "Aún no has hecho ninguna copia de seguridad."
+    : `Han pasado ${d} días desde tu última copia.`;
+  host.innerHTML=`<div class="notice">
+    <span class="notice-ico">${I.alert}</span>
+    <span class="notice-txt">${txt} Si pierdes el teléfono o borras los datos de Chrome, se pierde todo.</span>
+    <span class="notice-actions">
+      <button class="btn-sm" id="notice-backup">Descargar</button>
+      <button class="rest-x" id="notice-close" aria-label="Ahora no">${I.x}</button>
+    </span>
+  </div>`;
+  const b=document.getElementById("notice-backup");
+  if(b) b.onclick=downloadBackup;
+  const c=document.getElementById("notice-close");
+  if(c) c.onclick=()=>{ S.backupDismissed=true; renderBackupNotice(); };
+}
+
 function renderDataPanel(){
   const host=document.getElementById("datapanel");
   const btn=document.getElementById("version-btn");
@@ -763,6 +950,9 @@ function renderDataPanel(){
     <p style="font-size:13px;color:var(--text-2);margin:0;line-height:1.6">
       Guardados en este teléfono: <strong>${st.sesiones}</strong> ${st.sesiones===1?"sesión":"sesiones"},
       <strong>${st.dias}</strong> ${st.dias===1?"día":"días"} de pasos, ${st.perfiles} perfiles.</p>
+    <p style="font-size:12px;color:var(--text-faint);margin:8px 0 0">
+      Última copia: ${(()=>{const d=daysSinceBackup();
+        return d===null?"nunca":(d===0?"hoy":d===1?"ayer":`hace ${d} días`);})()}</p>
     <p class="warn">Los datos viven solo en este navegador. Si cambias de móvil, borras los datos de
       Chrome o desinstalas la app, se pierden. Descarga una copia de vez en cuando y guárdala donde
       no dependa del teléfono (Drive, correo, ordenador).</p>
@@ -816,7 +1006,7 @@ function renderNav(){
   nav.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;S.saveState="idle";renderAll();});
 }
 
-function renderAll(){ applyTheme(); renderProfiles(); renderDataPanel(); renderNav(); renderMain(); }
+function renderAll(){ applyTheme(); renderProfiles(); renderBackupNotice(); renderDataPanel(); renderNav(); renderMain(); }
 
 function renderMain(){
   barCharts={}; barChartSeq=0;
@@ -1216,10 +1406,40 @@ function viewProgress(){
       </select>
       <span style="font-size:12px;color:var(--text-faint)">${list.length} ejerc.</span>
     </div>
+    ${prCard()}
     ${pts.length<2
       ? `<div class="empty">${I.trend}<h3>Necesitas al menos 2 sesiones</h3><p>Sigue registrando este ejercicio para ver la tendencia.</p></div>`
       : `<div class="card pad"><p class="card-title">${esc(S.exercises.find(e=>e.id===S.progEx)?.name||"")}</p>
          ${lineChart(pts,{aLabel:"Peso máx (kg)",bLabel:"Volumen (kg)"})}</div>`}
+  </div>`;
+}
+
+function prCard(){
+  if(!S.progEx) return "";
+  const ex=S.exercises.find(e=>e.id===S.progEx);
+  const b=bestFor(S.progEx);
+  if(!b.e1rm && !b.wBest) return "";
+  return `<div class="card pad">
+    <p class="card-title">Récords · ${esc(ex?ex.name:"")}</p>
+    <div class="row" style="gap:18px;flex-wrap:wrap">
+      <div>
+        <p class="stat-num">${b.wBest?nf(b.wBest):"—"}<span style="font-size:13px;color:var(--text-faint);font-weight:400"> kg</span></p>
+        <p class="stat-lbl">Peso máximo${b.wReps?` · ${b.wReps} reps`:""}</p>
+      </div>
+      <div class="divider"></div>
+      <div>
+        <p class="stat-num" style="color:var(--accent)">${b.e1rm?nf(Math.round(b.e1rm)):"—"}<span style="font-size:13px;color:var(--text-faint);font-weight:400"> kg</span></p>
+        <p class="stat-lbl">1RM estimado</p>
+      </div>
+      ${b.date?`<div class="divider"></div>
+      <div>
+        <p class="stat-num" style="font-size:15px">${b.weight}×${b.reps}</p>
+        <p class="stat-lbl">${fmtDate(b.date)}</p>
+      </div>`:""}
+    </div>
+    <p style="font-size:11px;color:var(--text-ghost);margin:12px 0 0;line-height:1.5">
+      El 1RM estimado (fórmula de Epley) permite comparar series de rangos distintos.
+      Solo se calcula hasta 12 repeticiones, donde la estimación es fiable.</p>
   </div>`;
 }
 
@@ -1621,9 +1841,25 @@ function wire(){
       const cur=currentSession(); if(!cur) return;
       const e=cur.entries.find(x=>x.id===exId); if(!e) return;
       const s=e.sets.find(x=>x.id===setId); if(!s) return;
+      const eraCompleta = s.weight!=="" && s.reps!=="";
       s[field]=inp.value;
+      const esCompleta = s.weight!=="" && s.reps!=="";
       S.saveState="saving";
       persistSessions();                    // escritura síncrona inmediata
+
+      // Al cerrar una serie: arranca el descanso y comprueba si es récord
+      if(!eraCompleta && esCompleta){
+        const b=bodyOf(S.activeId);
+        const segs=Math.round((b.restMin??DEFAULT_BODY.restMin)*60);
+        startRest(segs, e.name);
+        const prev=bestFor(e.exerciseId, S.date);
+        const v=e1RM(s.weight, s.reps);
+        if(prev.e1rm>0 && v>prev.e1rm*1.001){
+          vibrate([60,50,60]);
+          toast(`Récord en ${e.name}`);
+        }
+      }
+
       const row=document.querySelector(`[data-setrow="${exId}:${setId}"]`);
       if(row){
         const done=s.weight!==""&&s.reps!=="";
