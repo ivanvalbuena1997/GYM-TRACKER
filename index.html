@@ -359,11 +359,12 @@ const SET_LANDMARKS = {
 function volumeStatus(sets, lm){
   if(!lm) return {label:"", color:"var(--text-muted)"};
   if(sets===0) return {label:"sin trabajar", color:"var(--text-ghost)"};
-  if(sets < lm.mev) return {label:"por debajo del mínimo", color:"#ffb23d"};
+  // El rojo se reserva para lo que frena la hipertrofia: quedarse corto de volumen
+  if(sets < lm.mev) return {label:"por debajo del mínimo", color:"#ff4d4d"};
   if(sets < lm.min) return {label:"efectivo", color:"var(--text-dim)"};
   if(sets <= lm.max) return {label:"en rango óptimo", color:"var(--accent)"};
   if(sets <= lm.mrv) return {label:"alto", color:"#ffb23d"};
-  return {label:"por encima del máximo", color:"var(--danger)"};
+  return {label:"por encima del máximo", color:"#ff8c3d"};
 }
 
 const THEMES = {
@@ -422,7 +423,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.6.2";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -665,27 +666,51 @@ function downloadBackup(){
    admite adjuntos. Lo que sí funciona en Android es la API Web Share: abre el
    menú del sistema con el archivo YA adjunto, se elige Gmail y se envía.
    Sin conexión (o si el navegador no lo admite) se descarga, como pediste.  */
-function canShareFiles(){
-  try{
-    if(!navigator.canShare || !navigator.share) return false;
-    const probe=new File(["{}"], "t.json", {type:"application/json"});
-    return navigator.canShare({files:[probe]});
-  }catch{ return false; }
+/* Chrome limita qué tipos de archivo se pueden compartir: application/json NO
+   está en su lista permitida, así que canShare() lo rechazaba y el envío caía
+   en la descarga sin avisar. Se prueban varios formatos de mayor a menor
+   preferencia; text/plain sí está permitido y Gmail lo adjunta igual.      */
+const SHARE_TYPES = [
+  {mime:"application/json", ext:"json"},
+  {mime:"text/plain",       ext:"json"},
+  {mime:"text/plain",       ext:"txt"}
+];
+
+function shareSupport(){
+  if(!navigator.share) return {ok:false, reason:"no-share"};
+  if(!navigator.canShare) return {ok:false, reason:"no-canshare"};
+  for(const t of SHARE_TYPES){
+    try{
+      const probe=new File(["{}"], "prueba."+t.ext, {type:t.mime});
+      if(navigator.canShare({files:[probe]})) return {ok:true, type:t};
+    }catch{}
+  }
+  return {ok:false, reason:"tipo-no-permitido"};
 }
 
 async function sendBackup(){
-  const blob=buildBackupBlob();
-  if(!blob){ toast("No se pudo leer el almacenamiento"); return; }
+  const payload=exportData();
+  if(!payload){ toast("No se pudo leer el almacenamiento"); return; }
+  const texto=JSON.stringify(payload,null,2);
 
-  const sinConexion = navigator.onLine===false;
-  if(sinConexion || !canShareFiles()){
+  if(navigator.onLine===false){
     downloadBackup();
-    toast(sinConexion ? "Sin conexión: copia descargada" : "Copia descargada");
+    toast("Sin conexión: copia descargada");
+    return;
+  }
+
+  const sup=shareSupport();
+  if(!sup.ok){
+    downloadBackup();
+    toast(sup.reason==="no-share"
+      ? "Este navegador no puede compartir: copia descargada"
+      : "No se pudo compartir: copia descargada");
     return;
   }
 
   const dest=store.get("backupEmail","") || "";
-  const file=new File([blob], backupFilename(), {type:"application/json"});
+  const nombre=`gym-tracker-copia-${todayISO()}.${sup.type.ext}`;
+  const file=new File([texto], nombre, {type:sup.type.mime});
   const st=backupStats();
   try{
     await navigator.share({
@@ -697,11 +722,12 @@ async function sendBackup(){
     markBackupDone();
     toast("Copia enviada");
   }catch(err){
-    // El usuario canceló el menú de compartir: no es un error
-    if(err && err.name==="AbortError") return;
+    if(err && err.name==="AbortError") return;   // el usuario canceló: normal
     downloadBackup();
+    toast("El envío falló: copia descargada");
   }
 }
+
 
 // Sustituye TODO el contenido actual por el de la copia
 function restoreBackup(payload){
@@ -761,17 +787,92 @@ function vibrate(pattern){
   try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch{}
 }
 
+/* Chrome descarta la vibración si la página no está visible, que es justo lo
+   que pasa al bloquear la pantalla durante el descanso. Por eso se combinan
+   tres avisos:
+   1. Wake Lock: mantiene la pantalla encendida mientras corre el temporizador,
+      con lo que la página sigue visible y la vibración sí llega.
+   2. Pitido con Web Audio, desbloqueado en la primera interacción.
+   3. Notificación del sistema si aun así la app quedó en segundo plano.     */
+let audioCtx=null, wakeLock=null;
+
+function unlockAudio(){
+  try{
+    if(!audioCtx){
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(AC) audioCtx=new AC();
+    }
+    if(audioCtx && audioCtx.state==="suspended") audioCtx.resume();
+  }catch{}
+}
+document.addEventListener("pointerdown", unlockAudio, {once:false});
+
+function beep(){
+  try{
+    if(!audioCtx) return;
+    const now=audioCtx.currentTime;
+    [0, 0.28].forEach(off=>{
+      const osc=audioCtx.createOscillator(), g=audioCtx.createGain();
+      osc.type="sine"; osc.frequency.value=880;
+      g.gain.setValueAtTime(0.0001, now+off);
+      g.gain.exponentialRampToValueAtTime(0.35, now+off+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now+off+0.22);
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.start(now+off); osc.stop(now+off+0.24);
+    });
+  }catch{}
+}
+
+async function keepAwake(on){
+  try{
+    if(on){
+      if("wakeLock" in navigator && !wakeLock){
+        wakeLock=await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release",()=>{ wakeLock=null; });
+      }
+    }else if(wakeLock){
+      await wakeLock.release(); wakeLock=null;
+    }
+  }catch{}
+}
+
+function notifyRestDone(label){
+  try{
+    if(!("Notification" in window)) return;
+    if(Notification.permission!=="granted") return;
+    new Notification("Descanso terminado", {
+      body: label ? `Siguiente serie · ${label}` : "Siguiente serie",
+      tag: "rest", silent: false, vibrate: [320,140,320]
+    });
+  }catch{}
+}
+
+function askNotifications(){
+  try{
+    if(!("Notification" in window)){ toast("Este navegador no admite notificaciones"); return; }
+    if(Notification.permission==="granted"){ toast("Las notificaciones ya están activadas"); return; }
+    if(Notification.permission==="denied"){ toast("Debes permitirlas en los ajustes del navegador"); return; }
+    Notification.requestPermission().then(p=>{
+      toast(p==="granted" ? "Notificaciones activadas" : "Notificaciones no activadas");
+      renderDataPanel();
+    });
+  }catch{}
+}
+
 function startRest(seconds, label){
   if(seconds<=0) return;
   restState = {endsAt: Date.now() + seconds*1000, total: seconds, label: label||"", done:false};
   if(restTick) clearInterval(restTick);
   restTick = setInterval(tickRest, 250);
+  unlockAudio();
+  keepAwake(true);          // pantalla encendida: así la vibración sí llega
   renderRest();
 }
 
 function stopRest(){
   restState = null;
   if(restTick){ clearInterval(restTick); restTick=null; }
+  keepAwake(false);
   renderRest();
 }
 
@@ -786,6 +887,9 @@ function tickRest(){
   if(left<=0 && !restState.done){
     restState.done = true;
     vibrate([320, 140, 320]);          // dos pulsos: se nota con el móvil en el bolsillo
+    beep();
+    if(document.hidden) notifyRestDone(restState.label);
+    keepAwake(false);
     renderRest();
     setTimeout(()=>{ if(restState && restState.done) stopRest(); }, 12000);
     return;
@@ -828,7 +932,12 @@ function renderRest(){
 }
 
 // Al volver del segundo plano se recalcula de inmediato
-document.addEventListener("visibilitychange",()=>{ if(!document.hidden) renderRest(); });
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden){
+    renderRest();
+    if(restState && !restState.done) keepAwake(true);   // el sistema lo libera al ocultarse
+  }
+});
 
 /* ============================ Estado ============================ */
 const S = {
@@ -1022,6 +1131,15 @@ function renderDataPanel(){
       <input class="inp" id="backup-email" type="email" inputmode="email" placeholder="tu@correo.com"
         value="${esc(store.get("backupEmail","")||"")}" style="flex:1;min-width:180px" aria-label="Correo para la copia">
     </div>
+    <div class="wraprow" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border-soft)">
+      <span style="font-size:12px;color:var(--text-muted);flex:1;min-width:150px">
+        Aviso del temporizador${(typeof Notification!=="undefined"&&Notification.permission==="granted")?" · activo":""}</span>
+      <button class="ghost" id="ask-notif" style="border:1px solid var(--border);border-radius:3px">
+        ${(typeof Notification!=="undefined"&&Notification.permission==="granted")?"Notificaciones activadas":"Activar notificaciones"}</button>
+    </div>
+    <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
+      Durante el descanso la pantalla se mantiene encendida para que la vibración funcione.
+      Las notificaciones son el respaldo si sales de la app.</p>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
       "Enviar" abre el menú de compartir de Android con el archivo ya adjunto: elige Gmail y envía.
       Tu correo se guarda solo en este teléfono, nunca en el código publicado.
@@ -1030,13 +1148,14 @@ function renderDataPanel(){
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-soft)">
         <p style="font-size:12px;color:var(--danger);display:flex;align-items:center;gap:6px;margin:0 0 10px">
           ${I.alert} Restaurar SUSTITUYE todos los datos actuales de los dos perfiles.</p>
-        <input type="file" id="import-file" accept="application/json,.json"
+        <input type="file" id="import-file" accept="application/json,text/plain,.json,.txt"
           style="font-size:12px;color:var(--text-muted);max-width:100%">
         <button class="ghost" id="import-cancel" style="margin-top:8px">Cancelar</button>
       </div>`:""}
   </div>`;
 
   const $=id=>document.getElementById(id);
+  if($("ask-notif")) $("ask-notif").onclick=askNotifications;
   if($("do-send")) $("do-send").onclick=sendBackup;
   if($("do-export")) $("do-export").onclick=downloadBackup;
   if($("backup-email")) $("backup-email").onchange=e=>{
