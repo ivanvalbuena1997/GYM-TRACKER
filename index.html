@@ -19,6 +19,7 @@
   --text:#f2f2ec; --text-2:#e4e4de; --text-dim:#a6a6a0; --text-muted:#6a6a66;
   --text-faint:#5c5c58; --text-ghost:#3d3d41; --text-ghost-2:#33333a;
   --accent:#d4ff3d; --accent-hover:#e2ff70; --on-accent:#0a0a0b; --danger:#ff6b5c;
+  --bad:#ff4d4d; --bad-strong:#ff1744;
   --glow:rgba(212,255,61,0.12);
 }
 body.theme-cream{
@@ -27,6 +28,7 @@ body.theme-cream{
   --text:#3f362c; --text-2:#4d4338; --text-dim:#6b6055; --text-muted:#8a7c6b;
   --text-faint:#a1937f; --text-ghost:#bcae99; --text-ghost-2:#cfc3af;
   --accent:#a94f6d; --accent-hover:#95405d; --on-accent:#fffdf9; --danger:#c65a4e;
+  --bad:#c62828; --bad-strong:#8e1414;
   --glow:rgba(169,79,109,0.20);
 }
 /* Medianoche: azul noche profundo + ámbar cálido */
@@ -36,6 +38,7 @@ body.theme-midnight{
   --text:#eef2ff; --text-2:#dbe2f5; --text-dim:#9aa6cc; --text-muted:#6e7aa3;
   --text-faint:#5a6690; --text-ghost:#3c4670; --text-ghost-2:#2e3760;
   --accent:#ffb340; --accent-hover:#ffc668; --on-accent:#0b1020; --danger:#ff6b6b;
+  --bad:#ff5c5c; --bad-strong:#ff2d4d;
   --glow:rgba(255,179,64,0.15);
 }
 /* Nieve: gris muy claro y frío + índigo */
@@ -45,6 +48,7 @@ body.theme-snow{
   --text:#1d2433; --text-2:#2b3444; --text-dim:#525c70; --text-muted:#6f7a91;
   --text-faint:#8a93a6; --text-ghost:#aab2c2; --text-ghost-2:#c2c9d6;
   --accent:#5257d8; --accent-hover:#4247c4; --on-accent:#ffffff; --danger:#d64545;
+  --bad:#d32f2f; --bad-strong:#a01818;
   --glow:rgba(82,87,216,0.18);
 }
 *,*::before,*::after{box-sizing:border-box}
@@ -359,12 +363,15 @@ const SET_LANDMARKS = {
 function volumeStatus(sets, lm){
   if(!lm) return {label:"", color:"var(--text-muted)"};
   if(sets===0) return {label:"sin trabajar", color:"var(--text-ghost)"};
-  // El rojo se reserva para lo que frena la hipertrofia: quedarse corto de volumen
-  if(sets < lm.mev) return {label:"por debajo del mínimo", color:"#ff4d4d"};
-  if(sets < lm.min) return {label:"efectivo", color:"var(--text-dim)"};
-  if(sets <= lm.max) return {label:"en rango óptimo", color:"var(--accent)"};
-  if(sets <= lm.mrv) return {label:"alto", color:"#ffb23d"};
-  return {label:"por encima del máximo", color:"#ff8c3d"};
+  // Acento = dentro del rango productivo; rojo = fuera. El rojo se toma del
+  // tema porque en los fondos claros hace falta uno más oscuro para que
+  // contraste. La flecha añade una pista que no depende del color: en el tema
+  // Medianoche el acento ES ámbar, así que fiarlo todo al color no bastaba.
+  if(sets < lm.mev) return {label:"por debajo del mínimo", color:"var(--bad)", mark:"▼"};
+  if(sets < lm.min) return {label:"efectivo", color:"var(--text-dim)", mark:""};
+  if(sets <= lm.max) return {label:"en rango óptimo", color:"var(--accent)", mark:"✓"};
+  if(sets <= lm.mrv) return {label:"alto", color:"var(--bad)", mark:"▲"};
+  return {label:"por encima del máximo", color:"var(--bad-strong)", mark:"▲▲"};
 }
 
 const THEMES = {
@@ -423,7 +430,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.3";
+const APP_VERSION = "1.6.5";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -675,9 +682,9 @@ function downloadBackup(){
    navegadores y que Gmail adjunta sin problemas. El contenido es el mismo JSON,
    y al restaurar se lee como texto, así que la extensión da igual.          */
 const SHARE_TYPES = [
-  {mime:"text/plain",       ext:"txt"},
   {mime:"text/plain",       ext:"json"},
-  {mime:"application/json", ext:"json"}
+  {mime:"application/json", ext:"json"},
+  {mime:"text/plain",       ext:"txt"}
 ];
 
 function shareSupport(){
@@ -788,40 +795,6 @@ function shareDiagnosis(){
     r.soloTexto = r.apiCanShare ? navigator.canShare({text:"x"}) : false;
   }catch{ r.soloTexto=false; }
   return r;
-}
-
-// Copiar la copia al portapapeles: no depende de Web Share en absoluto
-async function copyBackup(){
-  const payload=exportData();
-  if(!payload){ toast("No se pudo leer el almacenamiento"); return; }
-  const texto=JSON.stringify(payload);
-  try{
-    if(navigator.clipboard && navigator.clipboard.writeText){
-      await navigator.clipboard.writeText(texto);
-    }else{
-      const ta=document.createElement("textarea");
-      ta.value=texto; ta.style.position="fixed"; ta.style.opacity="0";
-      document.body.appendChild(ta); ta.select();
-      document.execCommand("copy"); ta.remove();
-    }
-    markBackupDone();
-    toast("Copiado · pégalo en el correo");
-  }catch(e){
-    toast("No se pudo copiar: usa Descargar");
-  }
-}
-
-// Abre Gmail con destinatario y asunto ya puestos (el adjunto se añade a mano)
-function openGmail(){
-  const dest=store.get("backupEmail","") || "";
-  const st=backupStats();
-  const asunto=encodeURIComponent(`Copia Gym Tracker · ${fmtDate(todayISO())}`);
-  const cuerpo=encodeURIComponent(
-    `Copia de seguridad de Gym Tracker.\n`+
-    `${st.sesiones} sesiones · ${st.dias} días de pasos · ${st.perfiles} perfiles.\n\n`+
-    `Adjunta aquí el archivo descargado, o pega debajo el contenido copiado.`);
-  const url=`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(dest)}&su=${asunto}&body=${cuerpo}`;
-  window.open(url,"_blank","noopener");
 }
 
 /* ==================== Récords y 1RM ====================
@@ -1230,10 +1203,6 @@ function renderDataPanel(){
       <button class="ghost" id="do-export" style="border:1px solid var(--border);border-radius:3px">${I.download} Descargar</button>
       <button class="ghost" id="do-import-open" style="border:1px solid var(--border);border-radius:3px">${I.upload} Restaurar</button>
     </div>
-    <div class="data-row">
-      <button class="ghost" id="do-copy" style="border:1px solid var(--border);border-radius:3px">${I.copy} Copiar al portapapeles</button>
-      <button class="ghost" id="do-gmail" style="border:1px solid var(--border);border-radius:3px">${I.mail} Abrir Gmail</button>
-    </div>
     <div class="wraprow" style="margin-top:12px">
       <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">Enviar a</span>
       <input class="inp" id="backup-email" type="email" inputmode="email" placeholder="tu@correo.com"
@@ -1268,8 +1237,6 @@ function renderDataPanel(){
   const $=id=>document.getElementById(id);
   if($("ask-notif")) $("ask-notif").onclick=askNotifications;
   if($("do-send")) $("do-send").onclick=sendBackup;
-  if($("do-copy")) $("do-copy").onclick=copyBackup;
-  if($("do-gmail")) $("do-gmail").onclick=openGmail;
   if($("diag-toggle")) $("diag-toggle").onclick=()=>{S.showDiag=!S.showDiag;renderDataPanel();};
   if($("diag-copy")) $("diag-copy").onclick=async()=>{
     const r=shareDiagnosis();
@@ -1814,7 +1781,7 @@ function landmarksCard(byWeek,weeks){
             <div style="position:absolute;left:0;width:${pc(r.sets)}%;height:100%;background:${st.color};
               border-radius:4px;opacity:.9"></div>
           </div>
-          <div style="font-size:10px;color:${st.color};margin-top:3px">${st.label}</div>
+          <div style="font-size:10px;color:${st.color};margin-top:3px">${st.mark?st.mark+" ":""}${st.label}</div>
         </div>`;
       }).join("")}
     </div>
