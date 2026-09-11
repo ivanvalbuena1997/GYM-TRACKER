@@ -423,7 +423,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.2";
+const APP_VERSION = "1.6.3";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -670,10 +670,14 @@ function downloadBackup(){
    está en su lista permitida, así que canShare() lo rechazaba y el envío caía
    en la descarga sin avisar. Se prueban varios formatos de mayor a menor
    preferencia; text/plain sí está permitido y Gmail lo adjunta igual.      */
+/* Orden de mayor a menor compatibilidad. Chrome valida TANTO el tipo MIME como
+   la extensión, y .txt con text/plain es la combinación que aceptan todos los
+   navegadores y que Gmail adjunta sin problemas. El contenido es el mismo JSON,
+   y al restaurar se lee como texto, así que la extensión da igual.          */
 const SHARE_TYPES = [
-  {mime:"application/json", ext:"json"},
+  {mime:"text/plain",       ext:"txt"},
   {mime:"text/plain",       ext:"json"},
-  {mime:"text/plain",       ext:"txt"}
+  {mime:"application/json", ext:"json"}
 ];
 
 function shareSupport(){
@@ -701,6 +705,7 @@ async function sendBackup(){
 
   const sup=shareSupport();
   if(!sup.ok){
+    lastShareError = `sin formato admitido (${sup.reason})`;
     downloadBackup();
     toast(sup.reason==="no-share"
       ? "Este navegador no puede compartir: copia descargada"
@@ -723,8 +728,10 @@ async function sendBackup(){
     toast("Copia enviada");
   }catch(err){
     if(err && err.name==="AbortError") return;   // el usuario canceló: normal
+    lastShareError = (err && (err.name||err.message)) ? `${err.name||""} ${err.message||""}`.trim() : "error desconocido";
     downloadBackup();
     toast("El envío falló: copia descargada");
+    renderDataPanel();
   }
 }
 
@@ -744,6 +751,77 @@ function restoreBackup(payload){
     entries.forEach(([k,v])=>localStorage.setItem(K+k,v));
     return {ok:true, count:entries.length};
   }catch(e){ return {ok:false, error:"No se pudo escribir en el almacenamiento."}; }
+}
+
+/* ==================== Diagnóstico del envío ====================
+   Cada navegador y versión de Android se comporta distinto con Web Share.
+   En vez de suponer, esto informa de lo que realmente admite ESTE dispositivo
+   y guarda el último error exacto de un intento de envío.                   */
+let lastShareError = null;
+
+function shareDiagnosis(){
+  const r = {
+    contextoSeguro: (typeof isSecureContext!=="undefined") ? isSecureContext : location.protocol==="https:",
+    conexion: navigator.onLine!==false,
+    apiShare: typeof navigator.share === "function",
+    apiCanShare: typeof navigator.canShare === "function",
+    apiFile: typeof File === "function",
+    instalada: window.matchMedia && window.matchMedia("(display-mode: standalone)").matches,
+    portapapeles: !!(navigator.clipboard && navigator.clipboard.writeText),
+    tipos: [],
+    elegido: null,
+    ultimoError: lastShareError
+  };
+  if(r.apiCanShare && r.apiFile){
+    SHARE_TYPES.forEach(t=>{
+      let ok=false, err="";
+      try{
+        const probe=new File(["{}"], "prueba."+t.ext, {type:t.mime});
+        ok = navigator.canShare({files:[probe]});
+      }catch(e){ err = e && e.name ? e.name : "error"; }
+      r.tipos.push({etiqueta:`${t.mime} · .${t.ext}`, ok, err});
+      if(ok && !r.elegido) r.elegido = `${t.mime} · .${t.ext}`;
+    });
+  }
+  // ¿Admite compartir solo texto? Sirve para saber si Web Share existe de verdad
+  try{
+    r.soloTexto = r.apiCanShare ? navigator.canShare({text:"x"}) : false;
+  }catch{ r.soloTexto=false; }
+  return r;
+}
+
+// Copiar la copia al portapapeles: no depende de Web Share en absoluto
+async function copyBackup(){
+  const payload=exportData();
+  if(!payload){ toast("No se pudo leer el almacenamiento"); return; }
+  const texto=JSON.stringify(payload);
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(texto);
+    }else{
+      const ta=document.createElement("textarea");
+      ta.value=texto; ta.style.position="fixed"; ta.style.opacity="0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    markBackupDone();
+    toast("Copiado · pégalo en el correo");
+  }catch(e){
+    toast("No se pudo copiar: usa Descargar");
+  }
+}
+
+// Abre Gmail con destinatario y asunto ya puestos (el adjunto se añade a mano)
+function openGmail(){
+  const dest=store.get("backupEmail","") || "";
+  const st=backupStats();
+  const asunto=encodeURIComponent(`Copia Gym Tracker · ${fmtDate(todayISO())}`);
+  const cuerpo=encodeURIComponent(
+    `Copia de seguridad de Gym Tracker.\n`+
+    `${st.sesiones} sesiones · ${st.dias} días de pasos · ${st.perfiles} perfiles.\n\n`+
+    `Adjunta aquí el archivo descargado, o pega debajo el contenido copiado.`);
+  const url=`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(dest)}&su=${asunto}&body=${cuerpo}`;
+  window.open(url,"_blank","noopener");
 }
 
 /* ==================== Récords y 1RM ====================
@@ -1104,6 +1182,32 @@ function renderBackupNotice(){
   if(c) c.onclick=()=>{ S.backupDismissed=true; renderBackupNotice(); };
 }
 
+function diagPanel(){
+  const r=shareDiagnosis();
+  const si=v=>v?`<span style="color:var(--accent)">sí</span>`:`<span style="color:var(--danger)">no</span>`;
+  const fila=(k,v)=>`<div class="tip-row" style="padding:3px 0"><span style="color:var(--text-muted)">${k}</span><span>${v}</span></div>`;
+  return `<div style="margin-top:10px;padding:12px;background:var(--input-bg);border:1px solid var(--border);
+    border-radius:4px;font-size:12px">
+    ${fila("Conexión segura (https)", si(r.contextoSeguro))}
+    ${fila("Con conexión", si(r.conexion))}
+    ${fila("Instalada como app", si(r.instalada))}
+    ${fila("navigator.share", si(r.apiShare))}
+    ${fila("navigator.canShare", si(r.apiCanShare))}
+    ${fila("Compartir solo texto", si(r.soloTexto))}
+    ${fila("Portapapeles", si(r.portapapeles))}
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
+      <div style="color:var(--text-muted);margin-bottom:4px">Formatos de archivo admitidos</div>
+      ${r.tipos.length? r.tipos.map(t=>fila(t.etiqueta, t.ok?si(true):(t.err?`<span style="color:var(--danger)">${esc(t.err)}</span>`:si(false)))).join("")
+        : `<div style="color:var(--text-faint)">No se pudo comprobar</div>`}
+      ${fila("<strong>Se usará</strong>", r.elegido?`<span style="color:var(--accent)">${esc(r.elegido)}</span>`:`<span style="color:var(--danger)">ninguno</span>`)}
+    </div>
+    ${r.ultimoError?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
+      <div style="color:var(--text-muted);margin-bottom:4px">Último error de envío</div>
+      <div style="color:var(--danger);word-break:break-word">${esc(r.ultimoError)}</div></div>`:""}
+    <button class="txt-muted" id="diag-copy" style="margin-top:10px">Copiar este informe</button>
+  </div>`;
+}
+
 function renderDataPanel(){
   const host=document.getElementById("datapanel");
   const btn=document.getElementById("version-btn");
@@ -1126,6 +1230,10 @@ function renderDataPanel(){
       <button class="ghost" id="do-export" style="border:1px solid var(--border);border-radius:3px">${I.download} Descargar</button>
       <button class="ghost" id="do-import-open" style="border:1px solid var(--border);border-radius:3px">${I.upload} Restaurar</button>
     </div>
+    <div class="data-row">
+      <button class="ghost" id="do-copy" style="border:1px solid var(--border);border-radius:3px">${I.copy} Copiar al portapapeles</button>
+      <button class="ghost" id="do-gmail" style="border:1px solid var(--border);border-radius:3px">${I.mail} Abrir Gmail</button>
+    </div>
     <div class="wraprow" style="margin-top:12px">
       <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">Enviar a</span>
       <input class="inp" id="backup-email" type="email" inputmode="email" placeholder="tu@correo.com"
@@ -1144,6 +1252,9 @@ function renderDataPanel(){
       "Enviar" abre el menú de compartir de Android con el archivo ya adjunto: elige Gmail y envía.
       Tu correo se guarda solo en este teléfono, nunca en el código publicado.
       Sin conexión se descarga automáticamente.</p>
+    <button class="txt-muted" id="diag-toggle" style="margin-top:14px">
+      ${S.showDiag?"Ocultar":"Ver"} diagnóstico del envío</button>
+    ${S.showDiag?diagPanel():""}
     ${S.importing?`
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-soft)">
         <p style="font-size:12px;color:var(--danger);display:flex;align-items:center;gap:6px;margin:0 0 10px">
@@ -1157,6 +1268,19 @@ function renderDataPanel(){
   const $=id=>document.getElementById(id);
   if($("ask-notif")) $("ask-notif").onclick=askNotifications;
   if($("do-send")) $("do-send").onclick=sendBackup;
+  if($("do-copy")) $("do-copy").onclick=copyBackup;
+  if($("do-gmail")) $("do-gmail").onclick=openGmail;
+  if($("diag-toggle")) $("diag-toggle").onclick=()=>{S.showDiag=!S.showDiag;renderDataPanel();};
+  if($("diag-copy")) $("diag-copy").onclick=async()=>{
+    const r=shareDiagnosis();
+    const txt=`Gym Tracker ${APP_VERSION} · diagnóstico\n`+
+      `https: ${r.contextoSeguro} | online: ${r.conexion} | instalada: ${r.instalada}\n`+
+      `share: ${r.apiShare} | canShare: ${r.apiCanShare} | soloTexto: ${r.soloTexto} | portapapeles: ${r.portapapeles}\n`+
+      r.tipos.map(t=>`  ${t.etiqueta}: ${t.ok?"SI":"NO"}${t.err?" ("+t.err+")":""}`).join("\n")+
+      `\nElegido: ${r.elegido||"ninguno"}\nÚltimo error: ${r.ultimoError||"-"}\nUA: ${navigator.userAgent}`;
+    try{ await navigator.clipboard.writeText(txt); toast("Informe copiado"); }
+    catch{ toast("No se pudo copiar"); }
+  };
   if($("do-export")) $("do-export").onclick=downloadBackup;
   if($("backup-email")) $("backup-email").onchange=e=>{
     const v=e.target.value.trim();

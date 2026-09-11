@@ -1,7 +1,7 @@
 /* Service worker: cachea la app para que funcione sin conexión.
    Estrategia "network first" para el HTML (así recibes actualizaciones al
    volver a tener red) y "cache first" para el resto de recursos.            */
-const CACHE = "gym-tracker-v162";
+const CACHE = "gym-tracker-v163";
 const ASSETS = [
   "./index.html",
   "./manifest.webmanifest",
