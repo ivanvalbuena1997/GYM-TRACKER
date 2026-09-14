@@ -430,7 +430,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.5";
+const APP_VERSION = "1.6.6";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -699,49 +699,91 @@ function shareSupport(){
   return {ok:false, reason:"tipo-no-permitido"};
 }
 
+/* La API Web Share exige "activación transitoria": el permiso temporal que
+   concede un toque del usuario y que se pierde si tardas demasiado antes de
+   llamar a share(). Preparando el archivo ANTES del toque, el clic llega
+   directo a share() y la activación sigue viva. Esto causaba el
+   NotAllowedError: se leía todo el almacenamiento y se recorrían de nuevo
+   todas las sesiones para el mensaje justo antes de compartir.             */
+let sharePrepared = null;   // {file, titulo, texto} listo para enviar
+let shareBusy = false;
+
+function prepareShare(){
+  try{
+    const payload=exportData();
+    if(!payload) return null;
+    const sup=shareSupport();
+    if(!sup.ok) return null;
+    const texto=JSON.stringify(payload);          // sin sangrado: más rápido y ligero
+    const nombre=`gym-tracker-copia-${todayISO()}.${sup.type.ext}`;
+    const dest=store.get("backupEmail","")||"";
+    const st=backupStats();
+    sharePrepared={
+      file: new File([texto], nombre, {type:sup.type.mime}),
+      titulo: `Copia Gym Tracker · ${fmtDate(todayISO())}`,
+      texto: `Copia de seguridad de Gym Tracker (${st.sesiones} sesiones, ${st.dias} días de pasos).`
+             + (dest?`\n\nEnviar a: ${dest}`:"")
+    };
+    return sharePrepared;
+  }catch(e){ return null; }
+}
+
 async function sendBackup(){
-  const payload=exportData();
-  if(!payload){ toast("No se pudo leer el almacenamiento"); return; }
-  const texto=JSON.stringify(payload,null,2);
+  if(shareBusy) return;                   // evita solapar dos menús de compartir
 
   if(navigator.onLine===false){
     downloadBackup();
     toast("Sin conexión: copia descargada");
     return;
   }
-
-  const sup=shareSupport();
-  if(!sup.ok){
-    lastShareError = `sin formato admitido (${sup.reason})`;
+  if(!navigator.share){
     downloadBackup();
-    toast(sup.reason==="no-share"
-      ? "Este navegador no puede compartir: copia descargada"
-      : "No se pudo compartir: copia descargada");
+    toast("Este navegador no puede compartir: copia descargada");
     return;
   }
 
-  const dest=store.get("backupEmail","") || "";
-  const nombre=`gym-tracker-copia-${todayISO()}.${sup.type.ext}`;
-  const file=new File([texto], nombre, {type:sup.type.mime});
-  const st=backupStats();
+  // Si no está preparado, se prepara ahora (puede costar la activación, pero
+  // así nunca se queda sin hacer nada)
+  const prep = sharePrepared || prepareShare();
+  if(!prep){
+    lastShareError="no se pudo preparar el archivo";
+    downloadBackup();
+    toast("No se pudo compartir: copia descargada");
+    return;
+  }
+
+  shareBusy=true;
   try{
-    await navigator.share({
-      files:[file],
-      title:`Copia Gym Tracker · ${fmtDate(todayISO())}`,
-      text:`Copia de seguridad de Gym Tracker (${st.sesiones} sesiones, ${st.dias} días de pasos).`
-           + (dest?`\n\nEnviar a: ${dest}`:"")
-    });
+    await navigator.share({files:[prep.file], title:prep.titulo, text:prep.texto});
+    lastShareError=null;
     markBackupDone();
     toast("Copia enviada");
   }catch(err){
-    if(err && err.name==="AbortError") return;   // el usuario canceló: normal
-    lastShareError = (err && (err.name||err.message)) ? `${err.name||""} ${err.message||""}`.trim() : "error desconocido";
-    downloadBackup();
-    toast("El envío falló: copia descargada");
-    renderDataPanel();
+    const nombre = err && err.name ? err.name : "";
+    if(nombre==="AbortError"){ shareBusy=false; return; }   // cancelado: normal
+
+    // Algunos destinos rechazan la combinación de archivo + texto.
+    // Segundo intento solo con el archivo, sin título ni cuerpo.
+    try{
+      await navigator.share({files:[prep.file]});
+      lastShareError=null;
+      markBackupDone();
+      toast("Copia enviada");
+      shareBusy=false;
+      return;
+    }catch(err2){
+      if(err2 && err2.name==="AbortError"){ shareBusy=false; return; }
+      lastShareError=`${nombre||""} ${(err&&err.message)||""}`.trim()
+        + ` | 2º intento: ${(err2&&err2.name)||"?"}`;
+      downloadBackup();
+      toast("El envío falló: copia descargada");
+      renderDataPanel();
+    }
+  }finally{
+    shareBusy=false;
+    sharePrepared=null;                   // se regenera en el siguiente uso
   }
 }
-
 
 // Sustituye TODO el contenido actual por el de la copia
 function restoreBackup(payload){
@@ -834,8 +876,14 @@ function bestFor(exerciseId, excludeDate){
 let restState = null;   // {endsAt, total, label, done}
 let restTick = null;
 
+// Devuelve true solo si el navegador ACEPTÓ la orden de vibrar. Chrome la
+// rechaza si la página no está visible o si no hay activación del usuario,
+// y en ese caso hay que recurrir a la notificación del sistema.
 function vibrate(pattern){
-  try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch{}
+  try{
+    if(!navigator.vibrate) return false;
+    return navigator.vibrate(pattern) !== false;
+  }catch{ return false; }
 }
 
 /* Chrome descarta la vibración si la página no está visible, que es justo lo
@@ -912,10 +960,17 @@ function askNotifications(){
 
 function startRest(seconds, label){
   if(seconds<=0) return;
+  // Una sola vez: las notificaciones son el respaldo cuando la vibración falla
+  if(!store.get("notifAsked",false) && typeof Notification!=="undefined"
+     && Notification.permission==="default"){
+    store.set("notifAsked",true);
+    try{ Notification.requestPermission(); }catch{}
+  }
   restState = {endsAt: Date.now() + seconds*1000, total: seconds, label: label||"", done:false};
   if(restTick) clearInterval(restTick);
   restTick = setInterval(tickRest, 250);
   unlockAudio();
+  vibrate(35);              // pulso de confirmación, aún dentro del gesto del usuario
   keepAwake(true);          // pantalla encendida: así la vibración sí llega
   renderRest();
 }
@@ -937,9 +992,11 @@ function tickRest(){
   const left = restRemaining();
   if(left<=0 && !restState.done){
     restState.done = true;
-    vibrate([320, 140, 320]);          // dos pulsos: se nota con el móvil en el bolsillo
+    const vibro = vibrate([400, 160, 400, 160, 400]);
     beep();
-    if(document.hidden) notifyRestDone(restState.label);
+    // La notificación es el único aviso fiable si Chrome rechaza la vibración
+    // (página en segundo plano) o si el sistema la ignora.
+    if(!vibro || document.hidden) notifyRestDone(restState.label);
     keepAwake(false);
     renderRest();
     setTimeout(()=>{ if(restState && restState.done) stopRest(); }, 12000);
@@ -1150,7 +1207,10 @@ function renderBackupNotice(){
     </span>
   </div>`;
   const b=document.getElementById("notice-backup");
-  if(b) b.onclick=sendBackup;
+  if(b){
+    b.addEventListener("pointerdown", ()=>{ prepareShare(); }, {passive:true});
+    b.onclick=sendBackup;
+  }
   const c=document.getElementById("notice-close");
   if(c) c.onclick=()=>{ S.backupDismissed=true; renderBackupNotice(); };
 }
@@ -1213,6 +1273,7 @@ function renderDataPanel(){
         Aviso del temporizador${(typeof Notification!=="undefined"&&Notification.permission==="granted")?" · activo":""}</span>
       <button class="ghost" id="ask-notif" style="border:1px solid var(--border);border-radius:3px">
         ${(typeof Notification!=="undefined"&&Notification.permission==="granted")?"Notificaciones activadas":"Activar notificaciones"}</button>
+      <button class="ghost" id="test-vibra" style="border:1px solid var(--border);border-radius:3px">Probar aviso</button>
     </div>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
       Durante el descanso la pantalla se mantiene encendida para que la vibración funcione.
@@ -1236,7 +1297,23 @@ function renderDataPanel(){
 
   const $=id=>document.getElementById(id);
   if($("ask-notif")) $("ask-notif").onclick=askNotifications;
-  if($("do-send")) $("do-send").onclick=sendBackup;
+  if($("test-vibra")) $("test-vibra").onclick=()=>{
+    // Prueba directa: si aquí no vibra, el bloqueo está en el móvil o en Chrome,
+    // no en el temporizador
+    const ok=vibrate([400,160,400]);
+    unlockAudio(); beep();
+    const soporta = typeof navigator.vibrate === "function";
+    if(!soporta) toast("Tu navegador no admite vibración");
+    else if(!ok) toast("Chrome rechazó la vibración");
+    else toast("Vibración enviada · ¿la has notado?");
+    if(!ok || !soporta) notifyRestDone("Prueba");
+  };
+  if($("do-send")){
+    // Se prepara al apoyar el dedo, no al soltarlo: cuando llega el clic el
+    // archivo ya existe y share() se llama de inmediato con la activación viva
+    $("do-send").addEventListener("pointerdown", ()=>{ prepareShare(); }, {passive:true});
+    $("do-send").onclick=sendBackup;
+  }
   if($("diag-toggle")) $("diag-toggle").onclick=()=>{S.showDiag=!S.showDiag;renderDataPanel();};
   if($("diag-copy")) $("diag-copy").onclick=async()=>{
     const r=shareDiagnosis();
@@ -1249,6 +1326,7 @@ function renderDataPanel(){
     catch{ toast("No se pudo copiar"); }
   };
   if($("do-export")) $("do-export").onclick=downloadBackup;
+  if(S.showData && !sharePrepared) setTimeout(()=>{ prepareShare(); }, 0);
   if($("backup-email")) $("backup-email").onchange=e=>{
     const v=e.target.value.trim();
     if(v) store.set("backupEmail", v); else store.del("backupEmail");
