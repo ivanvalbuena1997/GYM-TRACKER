@@ -430,7 +430,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.6";
+const APP_VERSION = "1.6.7";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -728,6 +728,23 @@ function prepareShare(){
   }catch(e){ return null; }
 }
 
+// Experimento de diagnóstico: comparte SOLO texto, sin archivo.
+async function testShareText(){
+  if(!navigator.share){ toast("Sin API de compartir"); return; }
+  const act = navigator.userActivation
+    ? `activa:${navigator.userActivation.isActive}` : "sin API";
+  try{
+    await navigator.share({title:"Prueba Gym Tracker", text:"Prueba de compartir sin archivo."});
+    lastShareError=`prueba solo texto: OK (${act})`;
+    toast("Compartir funciona sin archivo");
+  }catch(e){
+    if(e && e.name==="AbortError"){ toast("Prueba cancelada"); return; }
+    lastShareError=`prueba solo texto: ${(e&&e.name)||"?"} ${(e&&e.message)||""} (${act})`;
+    toast("Falla incluso sin archivo");
+  }
+  renderDataPanel();
+}
+
 async function sendBackup(){
   if(shareBusy) return;                   // evita solapar dos menús de compartir
 
@@ -752,6 +769,12 @@ async function sendBackup(){
     return;
   }
 
+  // Chrome exige "activación transitoria" para share(). Esta API dice si la
+   // hay EN ESE INSTANTE, así que deja de ser una suposición.
+  const act = navigator.userActivation
+    ? `activa:${navigator.userActivation.isActive} previa:${navigator.userActivation.hasBeenActive}`
+    : "API userActivation no disponible";
+
   shareBusy=true;
   try{
     await navigator.share({files:[prep.file], title:prep.titulo, text:prep.texto});
@@ -774,7 +797,9 @@ async function sendBackup(){
     }catch(err2){
       if(err2 && err2.name==="AbortError"){ shareBusy=false; return; }
       lastShareError=`${nombre||""} ${(err&&err.message)||""}`.trim()
-        + ` | 2º intento: ${(err2&&err2.name)||"?"}`;
+        + ` | 2º intento: ${(err2&&err2.name)||"?"}`
+        + ` | ${act}`
+        + ` | archivo ${Math.round(prep.file.size/1024)}KB ${prep.file.type}`;
       downloadBackup();
       toast("El envío falló: copia descargada");
       renderDataPanel();
@@ -807,6 +832,7 @@ function restoreBackup(payload){
    En vez de suponer, esto informa de lo que realmente admite ESTE dispositivo
    y guarda el último error exacto de un intento de envío.                   */
 let lastShareError = null;
+let lastVibraTest = null;
 
 function shareDiagnosis(){
   const r = {
@@ -935,15 +961,38 @@ async function keepAwake(on){
   }catch{}
 }
 
-function notifyRestDone(label){
+/* Chrome para Android PROHÍBE `new Notification(...)`: lanza "Illegal
+   constructor" y exige lanzarlas desde el service worker. Este era el motivo
+   de que el respaldo de la vibración nunca funcionara en el móvil.          */
+let lastNotifyError = null;
+
+async function notifyRestDone(label){
   try{
-    if(!("Notification" in window)) return;
-    if(Notification.permission!=="granted") return;
-    new Notification("Descanso terminado", {
+    if(!("Notification" in window)){ lastNotifyError="sin API Notification"; return false; }
+    if(Notification.permission!=="granted"){ lastNotifyError="sin permiso ("+Notification.permission+")"; return false; }
+    const opts={
       body: label ? `Siguiente serie · ${label}` : "Siguiente serie",
-      tag: "rest", silent: false, vibrate: [320,140,320]
-    });
-  }catch{}
+      tag: "rest", renotify: true, silent: false,
+      vibrate: [400,160,400,160,400],
+      icon: "icon-192.png", badge: "icon-192.png"
+    };
+    // Vía correcta en Android
+    if("serviceWorker" in navigator){
+      const reg = await navigator.serviceWorker.getRegistration();
+      if(reg && reg.showNotification){
+        await reg.showNotification("Descanso terminado", opts);
+        lastNotifyError=null;
+        return true;
+      }
+    }
+    // Vía de escritorio
+    new Notification("Descanso terminado", opts);
+    lastNotifyError=null;
+    return true;
+  }catch(e){
+    lastNotifyError=(e&&(e.name||e.message))?`${e.name||""} ${e.message||""}`.trim():"error";
+    return false;
+  }
 }
 
 function askNotifications(){
@@ -1234,6 +1283,9 @@ function diagPanel(){
         : `<div style="color:var(--text-faint)">No se pudo comprobar</div>`}
       ${fila("<strong>Se usará</strong>", r.elegido?`<span style="color:var(--accent)">${esc(r.elegido)}</span>`:`<span style="color:var(--danger)">ninguno</span>`)}
     </div>
+    ${lastVibraTest?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
+      <div style="color:var(--text-muted);margin-bottom:4px">Prueba de aviso</div>
+      <div style="word-break:break-word">${esc(lastVibraTest)}</div></div>`:""}
     ${r.ultimoError?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
       <div style="color:var(--text-muted);margin-bottom:4px">Último error de envío</div>
       <div style="color:var(--danger);word-break:break-word">${esc(r.ultimoError)}</div></div>`:""}
@@ -1274,6 +1326,7 @@ function renderDataPanel(){
       <button class="ghost" id="ask-notif" style="border:1px solid var(--border);border-radius:3px">
         ${(typeof Notification!=="undefined"&&Notification.permission==="granted")?"Notificaciones activadas":"Activar notificaciones"}</button>
       <button class="ghost" id="test-vibra" style="border:1px solid var(--border);border-radius:3px">Probar aviso</button>
+      <button class="ghost" id="test-share" style="border:1px solid var(--border);border-radius:3px">Probar compartir</button>
     </div>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
       Durante el descanso la pantalla se mantiene encendida para que la vibración funcione.
@@ -1297,17 +1350,20 @@ function renderDataPanel(){
 
   const $=id=>document.getElementById(id);
   if($("ask-notif")) $("ask-notif").onclick=askNotifications;
-  if($("test-vibra")) $("test-vibra").onclick=()=>{
-    // Prueba directa: si aquí no vibra, el bloqueo está en el móvil o en Chrome,
-    // no en el temporizador
-    const ok=vibrate([400,160,400]);
-    unlockAudio(); beep();
+  if($("test-vibra")) $("test-vibra").onclick=async()=>{
+    // Prueba directa, dentro de un gesto real del usuario. Guarda lo que
+    // responde el navegador para poder diagnosticarlo con datos.
     const soporta = typeof navigator.vibrate === "function";
-    if(!soporta) toast("Tu navegador no admite vibración");
-    else if(!ok) toast("Chrome rechazó la vibración");
-    else toast("Vibración enviada · ¿la has notado?");
-    if(!ok || !soporta) notifyRestDone("Prueba");
+    const ok = soporta ? vibrate([400,160,400,160,400]) : false;
+    unlockAudio(); beep();
+    const notif = await notifyRestDone("Prueba");
+    lastVibraTest = `vibrate existe:${soporta} aceptada:${ok} | notificación:${notif}`
+      + (lastNotifyError?` (${lastNotifyError})`:"")
+      + ` | permiso:${(typeof Notification!=="undefined")?Notification.permission:"n/d"}`;
+    toast(ok ? "Vibración enviada · ¿la notaste?" : (notif?"Enviada por notificación":"El navegador la rechazó"));
+    renderDataPanel();
   };
+  if($("test-share")) $("test-share").onclick=testShareText;
   if($("do-send")){
     // Se prepara al apoyar el dedo, no al soltarlo: cuando llega el clic el
     // archivo ya existe y share() se llama de inmediato con la activación viva
@@ -1321,7 +1377,11 @@ function renderDataPanel(){
       `https: ${r.contextoSeguro} | online: ${r.conexion} | instalada: ${r.instalada}\n`+
       `share: ${r.apiShare} | canShare: ${r.apiCanShare} | soloTexto: ${r.soloTexto} | portapapeles: ${r.portapapeles}\n`+
       r.tipos.map(t=>`  ${t.etiqueta}: ${t.ok?"SI":"NO"}${t.err?" ("+t.err+")":""}`).join("\n")+
-      `\nElegido: ${r.elegido||"ninguno"}\nÚltimo error: ${r.ultimoError||"-"}\nUA: ${navigator.userAgent}`;
+      `\nElegido: ${r.elegido||"ninguno"}\nÚltimo error: ${r.ultimoError||"-"}`+
+      `\nPrueba aviso: ${lastVibraTest||"-"}`+
+      `\nNotificación: permiso=${(typeof Notification!=="undefined")?Notification.permission:"n/d"} error=${lastNotifyError||"-"}`+
+      `\nSW activo: ${!!(navigator.serviceWorker&&navigator.serviceWorker.controller)}`+
+      `\nUA: ${navigator.userAgent}`;
     try{ await navigator.clipboard.writeText(txt); toast("Informe copiado"); }
     catch{ toast("No se pudo copiar"); }
   };
