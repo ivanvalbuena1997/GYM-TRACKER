@@ -430,7 +430,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.8";
+const APP_VERSION = "1.6.9";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -833,7 +833,7 @@ function restoreBackup(payload){
    En vez de suponer, esto informa de lo que realmente admite ESTE dispositivo
    y guarda el último error exacto de un intento de envío.                   */
 let lastShareError = null;
-let lastVibraTest = null;
+let lastAvisoTest = null;
 
 function shareDiagnosis(){
   const r = {
@@ -903,23 +903,12 @@ function bestFor(exerciseId, excludeDate){
 let restState = null;   // {endsAt, total, label, done}
 let restTick = null;
 
-// Devuelve true solo si el navegador ACEPTÓ la orden de vibrar. Chrome la
-// rechaza si la página no está visible o si no hay activación del usuario,
-// y en ese caso hay que recurrir a la notificación del sistema.
-function vibrate(pattern){
-  try{
-    if(!navigator.vibrate) return false;
-    return navigator.vibrate(pattern) !== false;
-  }catch{ return false; }
-}
-
-/* Chrome descarta la vibración si la página no está visible, que es justo lo
-   que pasa al bloquear la pantalla durante el descanso. Por eso se combinan
-   tres avisos:
-   1. Wake Lock: mantiene la pantalla encendida mientras corre el temporizador,
-      con lo que la página sigue visible y la vibración sí llega.
-   2. Pitido con Web Audio, desbloqueado en la primera interacción.
-   3. Notificación del sistema si aun así la app quedó en segundo plano.     */
+/* Avisos al terminar el descanso. La vibración se descartó: en Android la
+   decisión final es del sistema y no podía forzarse desde una app web, así
+   que el aviso es sonoro. Dos capas:
+   1. Alarma con Web Audio, desbloqueada en la primera interacción. Es el
+      aviso principal, y el Wake Lock mantiene la página activa para que suene.
+   2. Notificación del sistema si la app quedó en segundo plano.            */
 let audioCtx=null, wakeLock=null;
 
 function unlockAudio(){
@@ -979,7 +968,6 @@ async function notifyRestDone(label){
       body: label ? `Siguiente serie · ${label}` : "Siguiente serie",
       tag: "rest", renotify: true, silent: false,
       requireInteraction: true,
-      vibrate: [1200],
       icon: "icon-192.png", badge: "icon-192.png"
     };
     // Vía correcta en Android
@@ -1015,7 +1003,7 @@ function askNotifications(){
 
 function startRest(seconds, label){
   if(seconds<=0) return;
-  // Una sola vez: las notificaciones son el respaldo cuando la vibración falla
+  // Una sola vez: la notificación es el respaldo si la app queda en segundo plano
   if(!store.get("notifAsked",false) && typeof Notification!=="undefined"
      && Notification.permission==="default"){
     store.set("notifAsked",true);
@@ -1025,8 +1013,7 @@ function startRest(seconds, label){
   if(restTick) clearInterval(restTick);
   restTick = setInterval(tickRest, 250);
   unlockAudio();
-  vibrate(35);              // pulso de confirmación, aún dentro del gesto del usuario
-  keepAwake(true);          // pantalla encendida: así la vibración sí llega
+  keepAwake(true);          // pantalla encendida: así la alarma suena con la app activa
   renderRest();
 }
 
@@ -1047,14 +1034,10 @@ function tickRest(){
   const left = restRemaining();
   if(left<=0 && !restState.done){
     restState.done = true;
-    // Pulso único y largo: varios Android ignoran los patrones pero sí
-    // respetan una vibración simple y prolongada.
-    let vibro = vibrate(1200);
-    if(!vibro) vibro = vibrate([500,200,500]);
     beep();
-    // La notificación es el único aviso fiable si Chrome rechaza la vibración
-    // (página en segundo plano) o si el sistema la ignora.
-    if(!vibro || document.hidden) notifyRestDone(restState.label);
+    // Si la app quedó en segundo plano el sonido puede no oírse: ahí entra
+    // la notificación del sistema.
+    if(document.hidden) notifyRestDone(restState.label);
     keepAwake(false);
     renderRest();
     setTimeout(()=>{ if(restState && restState.done) stopRest(); }, 12000);
@@ -1292,9 +1275,9 @@ function diagPanel(){
         : `<div style="color:var(--text-faint)">No se pudo comprobar</div>`}
       ${fila("<strong>Se usará</strong>", r.elegido?`<span style="color:var(--accent)">${esc(r.elegido)}</span>`:`<span style="color:var(--danger)">ninguno</span>`)}
     </div>
-    ${lastVibraTest?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
+    ${lastAvisoTest?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
       <div style="color:var(--text-muted);margin-bottom:4px">Prueba de aviso</div>
-      <div style="word-break:break-word">${esc(lastVibraTest)}</div></div>`:""}
+      <div style="word-break:break-word">${esc(lastAvisoTest)}</div></div>`:""}
     ${r.ultimoError?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft)">
       <div style="color:var(--text-muted);margin-bottom:4px">Último error de envío</div>
       <div style="color:var(--danger);word-break:break-word">${esc(r.ultimoError)}</div></div>`:""}
@@ -1334,16 +1317,15 @@ function renderDataPanel(){
         Aviso del temporizador${(typeof Notification!=="undefined"&&Notification.permission==="granted")?" · activo":""}</span>
       <button class="ghost" id="ask-notif" style="border:1px solid var(--border);border-radius:3px">
         ${(typeof Notification!=="undefined"&&Notification.permission==="granted")?"Notificaciones activadas":"Activar notificaciones"}</button>
-      <button class="ghost" id="test-vibra" style="border:1px solid var(--border);border-radius:3px">Probar aviso</button>
+      <button class="ghost" id="test-aviso" style="border:1px solid var(--border);border-radius:3px">Probar aviso</button>
       <button class="ghost" id="test-share" style="border:1px solid var(--border);border-radius:3px">Probar compartir</button>
       <button class="ghost" id="toggle-sound" style="border:1px solid var(--border);border-radius:3px">
         ${store.get("silencio",false)?"Sonido desactivado":"Sonido activado"}</button>
     </div>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
-      Durante el descanso la pantalla se mantiene encendida. Si el móvil no vibra aunque la prueba
-      diga "aceptada", el bloqueo está en Android y no puede forzarse desde una app web: revisa
-      Ajustes → Aplicaciones → Gym Tracker → Notificaciones y activa la vibración del canal, y
-      comprueba que el teléfono no esté en silencio o No molestar. El sonido no depende de eso.</p>
+      El aviso al terminar el descanso es sonoro: tres tonos ascendentes, pensados para oírse con
+      auriculares puestos. La pantalla se mantiene encendida mientras corre el temporizador para
+      que suene con la app activa, y si sales de ella salta la notificación del sistema.</p>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
       "Enviar" abre el menú de compartir de Android con el archivo ya adjunto: elige Gmail y envía.
       Tu correo se guarda solo en este teléfono, nunca en el código publicado.
@@ -1363,17 +1345,16 @@ function renderDataPanel(){
 
   const $=id=>document.getElementById(id);
   if($("ask-notif")) $("ask-notif").onclick=askNotifications;
-  if($("test-vibra")) $("test-vibra").onclick=async()=>{
-    // Prueba directa, dentro de un gesto real del usuario. Guarda lo que
-    // responde el navegador para poder diagnosticarlo con datos.
-    const soporta = typeof navigator.vibrate === "function";
-    const ok = soporta ? vibrate([400,160,400,160,400]) : false;
-    unlockAudio(); beep();
+  if($("test-aviso")) $("test-aviso").onclick=async()=>{
+    // Prueba directa del aviso: suena la alarma y se lanza la notificación
+    unlockAudio();
+    const sonido = !store.get("silencio",false);
+    beep();
     const notif = await notifyRestDone("Prueba");
-    lastVibraTest = `vibrate existe:${soporta} aceptada:${ok} | notificación:${notif}`
+    lastAvisoTest = `sonido:${sonido} | notificación:${notif}`
       + (lastNotifyError?` (${lastNotifyError})`:"")
       + ` | permiso:${(typeof Notification!=="undefined")?Notification.permission:"n/d"}`;
-    toast(ok ? "Vibración enviada · ¿la notaste?" : (notif?"Enviada por notificación":"El navegador la rechazó"));
+    toast(sonido ? "Alarma reproducida · ¿la has oído?" : "Sonido desactivado");
     renderDataPanel();
   };
   if($("test-share")) $("test-share").onclick=testShareText;
@@ -1397,7 +1378,7 @@ function renderDataPanel(){
       `share: ${r.apiShare} | canShare: ${r.apiCanShare} | soloTexto: ${r.soloTexto} | portapapeles: ${r.portapapeles}\n`+
       r.tipos.map(t=>`  ${t.etiqueta}: ${t.ok?"SI":"NO"}${t.err?" ("+t.err+")":""}`).join("\n")+
       `\nElegido: ${r.elegido||"ninguno"}\nÚltimo error: ${r.ultimoError||"-"}`+
-      `\nPrueba aviso: ${lastVibraTest||"-"}`+
+      `\nPrueba aviso: ${lastAvisoTest||"-"}`+
       `\nNotificación: permiso=${(typeof Notification!=="undefined")?Notification.permission:"n/d"} error=${lastNotifyError||"-"}`+
       `\nSW activo: ${!!(navigator.serviceWorker&&navigator.serviceWorker.controller)}`+
       `\nUA: ${navigator.userAgent}`;
@@ -2293,7 +2274,6 @@ function wire(){
         const prev=bestFor(e.exerciseId, S.date);
         const v=e1RM(s.weight, s.reps);
         if(prev.e1rm>0 && v>prev.e1rm*1.001){
-          vibrate([60,50,60]);
           toast(`Récord en ${e.name}`);
         }
       }
