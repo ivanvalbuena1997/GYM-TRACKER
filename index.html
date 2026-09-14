@@ -430,7 +430,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.7";
+const APP_VERSION = "1.6.8";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -677,14 +677,15 @@ function downloadBackup(){
    está en su lista permitida, así que canShare() lo rechazaba y el envío caía
    en la descarga sin avisar. Se prueban varios formatos de mayor a menor
    preferencia; text/plain sí está permitido y Gmail lo adjunta igual.      */
-/* Orden de mayor a menor compatibilidad. Chrome valida TANTO el tipo MIME como
-   la extensión, y .txt con text/plain es la combinación que aceptan todos los
-   navegadores y que Gmail adjunta sin problemas. El contenido es el mismo JSON,
-   y al restaurar se lee como texto, así que la extensión da igual.          */
+/* SOLO parejas MIME-extensión COHERENTES.
+   Lección aprendida a base de fallos: canShare() valida únicamente el tipo
+   MIME, pero share() valida además que la extensión concuerde. Emparejar
+   text/plain con .json pasaba el primer filtro y era rechazado en el segundo
+   con NotAllowedError. .txt con text/plain es la pareja verificada en este
+   dispositivo. El contenido sigue siendo JSON y al restaurar se lee igual. */
 const SHARE_TYPES = [
-  {mime:"text/plain",       ext:"json"},
-  {mime:"application/json", ext:"json"},
-  {mime:"text/plain",       ext:"txt"}
+  {mime:"text/plain",       ext:"txt"},
+  {mime:"application/json", ext:"json"}
 ];
 
 function shareSupport(){
@@ -932,18 +933,22 @@ function unlockAudio(){
 }
 document.addEventListener("pointerdown", unlockAudio, {once:false});
 
+// El sonido acaba siendo el aviso más fiable: no depende de los ajustes de
+// vibración de Android, solo del volumen. Tres tonos ascendentes, audibles.
 function beep(){
   try{
     if(!audioCtx) return;
+    if(store.get("silencio",false)) return;
     const now=audioCtx.currentTime;
-    [0, 0.28].forEach(off=>{
+    [[0,660],[0.22,880],[0.44,1100]].forEach(([off,freq])=>{
       const osc=audioCtx.createOscillator(), g=audioCtx.createGain();
-      osc.type="sine"; osc.frequency.value=880;
+      osc.type="triangle"; osc.frequency.value=freq;
       g.gain.setValueAtTime(0.0001, now+off);
-      g.gain.exponentialRampToValueAtTime(0.35, now+off+0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now+off+0.22);
+      g.gain.exponentialRampToValueAtTime(0.6, now+off+0.02);
+      g.gain.setValueAtTime(0.6, now+off+0.14);
+      g.gain.exponentialRampToValueAtTime(0.0001, now+off+0.20);
       osc.connect(g); g.connect(audioCtx.destination);
-      osc.start(now+off); osc.stop(now+off+0.24);
+      osc.start(now+off); osc.stop(now+off+0.22);
     });
   }catch{}
 }
@@ -973,7 +978,8 @@ async function notifyRestDone(label){
     const opts={
       body: label ? `Siguiente serie · ${label}` : "Siguiente serie",
       tag: "rest", renotify: true, silent: false,
-      vibrate: [400,160,400,160,400],
+      requireInteraction: true,
+      vibrate: [1200],
       icon: "icon-192.png", badge: "icon-192.png"
     };
     // Vía correcta en Android
@@ -1041,7 +1047,10 @@ function tickRest(){
   const left = restRemaining();
   if(left<=0 && !restState.done){
     restState.done = true;
-    const vibro = vibrate([400, 160, 400, 160, 400]);
+    // Pulso único y largo: varios Android ignoran los patrones pero sí
+    // respetan una vibración simple y prolongada.
+    let vibro = vibrate(1200);
+    if(!vibro) vibro = vibrate([500,200,500]);
     beep();
     // La notificación es el único aviso fiable si Chrome rechaza la vibración
     // (página en segundo plano) o si el sistema la ignora.
@@ -1327,10 +1336,14 @@ function renderDataPanel(){
         ${(typeof Notification!=="undefined"&&Notification.permission==="granted")?"Notificaciones activadas":"Activar notificaciones"}</button>
       <button class="ghost" id="test-vibra" style="border:1px solid var(--border);border-radius:3px">Probar aviso</button>
       <button class="ghost" id="test-share" style="border:1px solid var(--border);border-radius:3px">Probar compartir</button>
+      <button class="ghost" id="toggle-sound" style="border:1px solid var(--border);border-radius:3px">
+        ${store.get("silencio",false)?"Sonido desactivado":"Sonido activado"}</button>
     </div>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
-      Durante el descanso la pantalla se mantiene encendida para que la vibración funcione.
-      Las notificaciones son el respaldo si sales de la app.</p>
+      Durante el descanso la pantalla se mantiene encendida. Si el móvil no vibra aunque la prueba
+      diga "aceptada", el bloqueo está en Android y no puede forzarse desde una app web: revisa
+      Ajustes → Aplicaciones → Gym Tracker → Notificaciones y activa la vibración del canal, y
+      comprueba que el teléfono no esté en silencio o No molestar. El sonido no depende de eso.</p>
     <p style="font-size:11px;color:var(--text-ghost);margin:8px 0 0;line-height:1.5">
       "Enviar" abre el menú de compartir de Android con el archivo ya adjunto: elige Gmail y envía.
       Tu correo se guarda solo en este teléfono, nunca en el código publicado.
@@ -1364,6 +1377,12 @@ function renderDataPanel(){
     renderDataPanel();
   };
   if($("test-share")) $("test-share").onclick=testShareText;
+  if($("toggle-sound")) $("toggle-sound").onclick=()=>{
+    const nuevo=!store.get("silencio",false);
+    store.set("silencio",nuevo);
+    if(!nuevo){ unlockAudio(); beep(); }
+    renderDataPanel();
+  };
   if($("do-send")){
     // Se prepara al apoyar el dedo, no al soltarlo: cuando llega el clic el
     // archivo ya existe y share() se llama de inmediato con la activación viva
