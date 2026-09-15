@@ -158,12 +158,21 @@ button:disabled{opacity:.5;cursor:default}
 
 /* Exercise block */
 .exercise{overflow:hidden;border-left:3px solid var(--border)}
-.ex-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;gap:8px}
-.ex-toggle{display:flex;align-items:center;gap:9px;flex:1;min-width:0;background:none;border:none;
+.ex-head{display:flex;align-items:flex-start;justify-content:space-between;padding:12px 14px;gap:8px}
+.ex-toggle{display:flex;align-items:flex-start;gap:9px;flex:1;min-width:0;background:none;border:none;
   text-align:left;color:inherit;padding:0}
-.ex-name{color:var(--text);font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* El nombre completo se lee siempre: se parte en varias líneas en lugar de
+   recortarse con puntos suspensivos, que en el móvil ocultaba media palabra. */
+.ex-name{color:var(--text);font-weight:600;font-size:15px;line-height:1.3;
+  overflow-wrap:anywhere;word-break:break-word;min-width:0}
+.ex-title{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1;text-align:left}
+.ex-title .tag{align-self:flex-start}
 .tag{font-size:10px;font-weight:500;padding:2px 6px;border-radius:2px;flex-shrink:0;white-space:nowrap}
-.ex-meta{display:flex;align-items:center;gap:12px;flex-shrink:0}
+.ex-meta{display:flex;align-items:center;gap:10px;flex-shrink:0;padding-top:2px}
+.ex-move{display:flex;flex-direction:column;gap:1px}
+.ex-move .iconbtn{padding:1px 3px}
+.ex-move .iconbtn:disabled{opacity:.22;cursor:default}
+.ex-move .iconbtn:disabled:hover{color:var(--text-ghost)}
 .count{font-size:12px;color:var(--text-faint);font-variant-numeric:tabular-nums}
 .progress{height:2px;background:var(--border-soft)}
 .progress > div{height:100%;transition:width .3s;background:var(--accent)}
@@ -220,6 +229,36 @@ button:disabled{opacity:.5;cursor:default}
 
 /* Cards / titles */
 .card-title{font-size:11px;color:var(--text-faint);margin:0 0 14px;letter-spacing:.08em;text-transform:uppercase}
+
+/* Listado de récords. Reutiliza el lenguaje de los bloques de ejercicio y del
+   historial: tarjeta con barra lateral del color del grupo muscular. Todos los
+   colores salen de variables del tema, así funciona en las cuatro apariencias. */
+.logros-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+.logros-count{font-size:11px;color:var(--text-faint);font-variant-numeric:tabular-nums;
+  border:1px solid var(--border);border-radius:20px;padding:1px 8px;flex-shrink:0}
+.logros{display:flex;flex-direction:column;gap:5px}
+.logro{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
+  padding:10px 12px;text-align:left;border:none;border-left:3px solid var(--border);
+  border-radius:3px;transition:background .15s,box-shadow .15s;
+  background:linear-gradient(180deg,var(--surface-top),var(--surface-bot));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+body.light .logro{box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 1px 2px rgba(90,80,60,.05)}
+.logro:hover{background:linear-gradient(180deg,
+  color-mix(in srgb,var(--text) 5%,var(--surface-top)),
+  color-mix(in srgb,var(--text) 3%,var(--surface-bot)))}
+.logro.on{background:linear-gradient(180deg,
+  color-mix(in srgb,var(--accent) 11%,var(--surface-top)),
+  color-mix(in srgb,var(--accent) 6%,var(--surface-bot)))}
+.logro-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.logro-name{font-size:14px;font-weight:600;color:var(--text);line-height:1.3;overflow-wrap:anywhere}
+.logro-sub{font-size:11px;color:var(--text-faint);font-variant-numeric:tabular-nums;
+  display:flex;align-items:center;gap:6px}
+.logro-sep{color:var(--text-ghost)}
+.logro-val{display:flex;align-items:baseline;gap:3px;flex-shrink:0;font-size:17px;font-weight:600;
+  color:var(--text-2);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.logro.on .logro-val{color:var(--accent)}
+.logro-unit{font-size:10px;font-weight:400;color:var(--text-faint)}
+.logros-foot{font-size:11px;color:var(--text-ghost);margin:14px 0 0;line-height:1.5}
 
 /* History */
 .year-head{width:100%;display:flex;align-items:center;justify-content:space-between;padding:13px 14px;
@@ -430,7 +469,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.6.9";
+const APP_VERSION = "1.7.1";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -1165,6 +1204,8 @@ const I = {
   mail:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>',
   download:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
   upload:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  up:'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>',
+  down2:'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
   copy:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   palette:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>',
   alert:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>'
@@ -1493,7 +1534,7 @@ function viewLog(){
       ${entries.length===0 && !S.showPicker ? `
         <div class="empty">${I.dumbbell}<h3>${dn} · ${fmtDate(S.date)} está vacío</h3>
         <p>Añade el primer ejercicio de esta sesión.</p></div>` : ""}
-      ${entries.map((e,ei)=>exerciseBlock(e,ei,prev)).join("")}
+      ${entries.map((e,ei)=>exerciseBlock(e,ei,prev,entries.length)).join("")}
       ${S.showPicker ? pickerHTML() : '<button class="dashed" id="add-ex">'+I.plus+' Añadir ejercicio</button>'}
     </div>
 
@@ -1543,7 +1584,8 @@ function copyPanel(){
   </div>`;
 }
 
-function exerciseBlock(e,ei,prev){
+function exerciseBlock(e,ei,prev,total){
+  const ultimo = ei===total-1;
   const c=muscleColor(e.muscle);
   const done=e.sets.filter(s=>s.weight!==""&&s.reps!=="").length;
   const all=e.sets.length>0 && done===e.sets.length;
@@ -1554,12 +1596,18 @@ function exerciseBlock(e,ei,prev){
   <div class="card exercise" style="border-left-color:${c}">
     <div class="ex-head">
       <button class="ex-toggle" data-toggle-ex="${e.id}">
-        ${open?I.down:I.right}
-        <span class="ex-name">${esc(e.name)}</span>
-        <span class="tag" style="background:${c}${theme().tagAlpha};color:${c}">${esc(e.muscle)}</span>
+        <span style="flex-shrink:0;padding-top:1px">${open?I.down:I.right}</span>
+        <span class="ex-title">
+          <span class="ex-name">${esc(e.name)}</span>
+          <span class="tag" style="background:${c}${theme().tagAlpha};color:${c}">${esc(e.muscle)}</span>
+        </span>
       </button>
       <div class="ex-meta">
         ${e.sets.length?`<span class="count"><span style="color:${all?"var(--accent)":"var(--text-dim)"}">${done}</span><span style="color:var(--text-ghost)">/${e.sets.length}</span></span>`:""}
+        <span class="ex-move">
+          <button class="iconbtn" data-move="${e.id}:-1" ${ei===0?"disabled":""} aria-label="Subir ejercicio">${I.up}</button>
+          <button class="iconbtn" data-move="${e.id}:1" ${ultimo?"disabled":""} aria-label="Bajar ejercicio">${I.down2}</button>
+        </span>
         <button class="iconbtn dg" data-del-ex="${e.id}" aria-label="Eliminar ejercicio">${I.trash}</button>
       </div>
     </div>
@@ -1830,6 +1878,7 @@ function viewProgress(){
       ? `<div class="empty">${I.trend}<h3>Necesitas al menos 2 sesiones</h3><p>Sigue registrando este ejercicio para ver la tendencia.</p></div>`
       : `<div class="card pad"><p class="card-title">${esc(S.exercises.find(e=>e.id===S.progEx)?.name||"")}</p>
          ${lineChart(pts,{aLabel:"Peso máx (kg)",bLabel:"Volumen (kg)"})}</div>`}
+    ${logrosCard()}
   </div>`;
 }
 
@@ -1859,6 +1908,55 @@ function prCard(){
     <p style="font-size:11px;color:var(--text-ghost);margin:12px 0 0;line-height:1.5">
       El 1RM estimado (fórmula de Epley) permite comparar series de rangos distintos.
       Solo se calcula hasta 12 repeticiones, donde la estimación es fiable.</p>
+  </div>`;
+}
+
+/* Listado completo de récords: recorre todos los ejercicios con datos y ordena
+   por fecha, de lo más reciente a lo más antiguo, para que lo último logrado
+   quede arriba.                                                              */
+function logrosCard(){
+  const ids=new Set();
+  S.sessions.forEach(x=>x.entries.forEach(e=>ids.add(e.exerciseId)));
+  const logros=[];
+  ids.forEach(id=>{
+    const b=bestFor(id);
+    if(!b.e1rm) return;
+    const ex=S.exercises.find(e=>e.id===id);
+    // Si el ejercicio se borró del catálogo, se recupera el nombre del historial
+    let nombre = ex ? ex.name : null;
+    let musculo = ex ? ex.muscle : null;
+    if(!nombre){
+      for(const sess of S.sessions){
+        const en=sess.entries.find(e=>e.exerciseId===id);
+        if(en){ nombre=en.name; musculo=en.muscle; break; }
+      }
+    }
+    logros.push({id, nombre:nombre||"(ejercicio eliminado)", musculo, ...b});
+  });
+  if(logros.length===0) return "";
+  logros.sort((a,b)=> a.date<b.date ? 1 : (a.date>b.date ? -1 : b.e1rm-a.e1rm));
+
+  return `<div class="card pad">
+    <div class="logros-head">
+      <p class="card-title" style="margin:0">Récords por ejercicio</p>
+      <span class="logros-count">${logros.length}</span>
+    </div>
+    <div class="logros">
+      ${logros.map(l=>{
+        const c = l.musculo ? muscleColor(l.musculo) : "var(--text-ghost)";
+        const esActual = l.id===S.progEx;
+        return `<button class="logro${esActual?" on":""}" data-logro="${l.id}"
+          style="border-left-color:${c}">
+          <span class="logro-main">
+            <span class="logro-name">${esc(l.nombre)}</span>
+            <span class="logro-sub">${l.weight}×${l.reps}<span class="logro-sep">·</span>${fmtDate(l.date)}</span>
+          </span>
+          <span class="logro-val">${nf(Math.round(l.e1rm))}<span class="logro-unit">kg</span></span>
+        </button>`;
+      }).join("")}
+    </div>
+    <p class="logros-foot">1RM estimado a partir de la mejor serie de cada ejercicio.
+      Pulsa uno para ver su gráfica arriba.</p>
   </div>`;
 }
 
@@ -2248,6 +2346,18 @@ function wire(){
 
   all("[data-toggle-ex]",b=>b.onclick=()=>{const id=b.dataset.toggleEx;S.openEx[id]=S.openEx[id]===false;renderMain();});
   all("[data-del-ex]",b=>b.onclick=()=>{const id=b.dataset.delEx;ensureSession(c=>{c.entries=c.entries.filter(e=>e.id!==id);});renderMain();});
+  all("[data-move]",b=>b.onclick=()=>{
+    if(b.disabled) return;
+    const [id,dirTxt]=b.dataset.move.split(":");
+    const dir=parseInt(dirTxt,10);
+    ensureSession(c=>{
+      const i=c.entries.findIndex(e=>e.id===id);
+      const j=i+dir;
+      if(i<0 || j<0 || j>=c.entries.length) return;
+      [c.entries[i], c.entries[j]] = [c.entries[j], c.entries[i]];   // intercambio simple
+    });
+    renderMain();
+  });
   all("[data-add-set]",b=>b.onclick=()=>{const id=b.dataset.addSet;
     ensureSession(c=>{const e=c.entries.find(x=>x.id===id); if(e) e.sets.push({id:uid(),weight:"",reps:""});});renderMain();});
   all("[data-del-set]",b=>b.onclick=()=>{const [ex,st]=b.dataset.delSet.split(":");
@@ -2386,6 +2496,11 @@ function wire(){
     showTip(`<div class="tip-date">${esc(r.full)}</div>${detalle}`, e, el.ownerSVGElement);
   });
   if($("prog-select")) $("prog-select").onchange=e=>{S.progEx=e.target.value;renderMain();};
+  all("[data-logro]",b=>b.onclick=()=>{
+    S.progEx=b.dataset.logro;
+    renderMain();
+    document.getElementById("main").scrollIntoView({behavior:"smooth",block:"start"});
+  });
 
   // --- Historial ---
   all("[data-year]",b=>b.onclick=()=>{const y=b.dataset.year;S.openYears[y]=!S.openYears[y];renderMain();});
