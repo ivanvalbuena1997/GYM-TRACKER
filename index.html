@@ -169,6 +169,11 @@ button:disabled{opacity:.5;cursor:default}
 .ex-title .tag{align-self:flex-start}
 .tag{font-size:10px;font-weight:500;padding:2px 6px;border-radius:2px;flex-shrink:0;white-space:nowrap}
 .ex-meta{display:flex;align-items:center;gap:10px;flex-shrink:0;padding-top:2px}
+.tag-uni{background:var(--border-soft);color:var(--text-muted);white-space:nowrap}
+.check{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text-2);
+  padding:4px 0;cursor:pointer;user-select:none}
+.check input{width:17px;height:17px;accent-color:var(--accent);flex-shrink:0;margin:0;cursor:pointer}
+.check-hint{color:var(--text-faint);font-size:11px}
 .ex-move{display:flex;flex-direction:column;gap:1px}
 .ex-move .iconbtn{padding:1px 3px}
 .ex-move .iconbtn:disabled{opacity:.22;cursor:default}
@@ -237,6 +242,13 @@ button:disabled{opacity:.5;cursor:default}
 .logros-count{font-size:11px;color:var(--text-faint);font-variant-numeric:tabular-nums;
   border:1px solid var(--border);border-radius:20px;padding:1px 8px;flex-shrink:0}
 .logros{display:flex;flex-direction:column;gap:5px}
+.logro-grupo{margin-bottom:16px}
+.logro-grupo:last-of-type{margin-bottom:0}
+.logro-grupo-head{display:flex;align-items:center;gap:8px;margin-bottom:7px;padding-left:1px}
+.logro-grupo-bar{width:3px;height:13px;border-radius:2px;flex-shrink:0}
+.logro-grupo-name{font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--text-muted);font-weight:600}
+.logro-grupo-n{font-size:10px;color:var(--text-ghost);font-variant-numeric:tabular-nums}
 .logro{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
   padding:10px 12px;text-align:left;border:none;border-left:3px solid var(--border);
   border-radius:3px;transition:background .15s,box-shadow .15s;
@@ -397,7 +409,7 @@ const SET_LANDMARKS = {
   "Femoral/Glúteo": {mev:6,  min:10, max:16, mrv:20},
   "Gemelos":        {mev:8,  min:12, max:16, mrv:20},
   "Core":           {mev:0,  min:8,  max:16, mrv:25},
-  "Antebrazo":      {mev:2,  min:8,  max:12, mrv:16}
+  "Antebrazo":      {mev:0,  min:8,  max:12, mrv:16}
 };
 function volumeStatus(sets, lm){
   if(!lm) return {label:"", color:"var(--text-muted)"};
@@ -469,7 +481,7 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.7.1";
+const APP_VERSION = "1.8";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -609,8 +621,27 @@ function sessionSets(sess){
   if(!sess) return 0;
   return sess.entries.reduce((a,e)=>a+e.sets.filter(x=>x.weight!==""&&x.reps!=="").length,0);
 }
+
+// ¿Es unilateral? Se mira la marca guardada en la sesión y, si no la tiene
+// (sesiones anteriores a esta versión), se consulta el catálogo.
+function esUnilateral(entry){
+  if(typeof entry.uni === "boolean") return entry.uni;
+  const ex = S.exercises.find(x=>x.id===entry.exerciseId);
+  return !!(ex && ex.uni);
+}
+
+// Series efectivas para el gasto calórico: un ejercicio unilateral son dos
+// veces el trabajo y dos veces el descanso, uno por cada lado.
+function sessionSetsEff(sess){
+  if(!sess) return 0;
+  return sess.entries.reduce((a,e)=>{
+    const hechas = e.sets.filter(x=>x.weight!==""&&x.reps!=="").length;
+    return a + hechas * (esUnilateral(e) ? 2 : 1);
+  },0);
+}
+
 function sessionSplit(sess, b){
-  const sets = sessionSets(sess);
+  const sets = sessionSetsEff(sess);
   const work = sets * (b.setSec||DEFAULT_BODY.setSec)/60;
   const rest = sets * (b.restMin??DEFAULT_BODY.restMin);
   return {sets, work, rest, total: work+rest};
@@ -932,6 +963,24 @@ function bestFor(exerciseId, excludeDate){
     });
   });
   return best;
+}
+
+// Devuelve la entrada del ejercicio en la sesión donde mejor lo hiciste,
+// medida por el mayor 1RM estimado de sus series. Es la referencia a batir,
+// que no tiene por qué ser la sesión que estás copiando.
+function bestEntryFor(exerciseId){
+  let mejor=null, mejorVal=0;
+  S.sessions.forEach(sess=>{
+    sess.entries.forEach(e=>{
+      if(e.exerciseId!==exerciseId) return;
+      let val=0;
+      e.sets.forEach(st=>{ const v=e1RM(st.weight, st.reps); if(v>val) val=v; });
+      // Si ninguna serie es válida para 1RM (p. ej. >12 reps), vale el peso máximo
+      if(val===0) e.sets.forEach(st=>{ const w=parseFloat(st.weight)||0; if(w>val) val=w; });
+      if(val>mejorVal){ mejorVal=val; mejor={entry:e, date:sess.date}; }
+    });
+  });
+  return mejor;
 }
 
 /* ==================== Temporizador de descanso ====================
@@ -1527,7 +1576,7 @@ function viewLog(){
       <div><p class="stat-num">${entries.length}</p><p class="stat-lbl">Ejercicios</p></div>
     </div>
     ${cur&&cur.copiedFrom?`<p style="font-size:11px;color:var(--text-faint);margin:0;padding:0 16px 12px;
-      display:flex;align-items:center;gap:6px">${I.copy} Copiada del ${fmtDate(cur.copiedFrom)} · los números en gris son lo que hiciste ese día</p>`:""}
+      display:flex;align-items:center;gap:6px">${I.copy} Copiada del ${fmtDate(cur.copiedFrom)} · los números en gris son tu mejor marca</p>`:""}
     </div>`:""}
 
     <div class="col g25">
@@ -1574,7 +1623,8 @@ function copyPanel(){
   };
   return `<div class="picker">
     <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">
-      Se copiarán los ejercicios y las series. Los pesos y reps quedarán como sugerencia, no rellenados.</p>
+      De cada ejercicio se reproduce tu mejor sesión: mismas series, con sus pesos y reps
+      en gris como referencia a superar. Los campos quedan vacíos.</p>
     <div class="picker-list">
       ${mismos.length?`<p class="card-title" style="margin:4px 0 2px">Otros ${dn.toLowerCase()}</p>${mismos.map(item).join("")}`:""}
       ${otros.length?`<p class="card-title" style="margin:10px 0 2px">Más recientes</p>${otros.map(item).join("")}`:""}
@@ -1599,7 +1649,7 @@ function exerciseBlock(e,ei,prev,total){
         <span style="flex-shrink:0;padding-top:1px">${open?I.down:I.right}</span>
         <span class="ex-title">
           <span class="ex-name">${esc(e.name)}</span>
-          <span class="tag" style="background:${c}${theme().tagAlpha};color:${c}">${esc(e.muscle)}</span>
+          <span class="tag" style="background:${c}${theme().tagAlpha};color:${c}">${esc(e.muscle)}</span>${esUnilateral(e)?'<span class="tag tag-uni">×2 unilateral</span>':""}
         </span>
       </button>
       <div class="ex-meta">
@@ -1647,6 +1697,8 @@ function pickerHTML(){
       <input class="inp full" id="new-name" placeholder="Nombre del ejercicio" value="${esc(pickerQuery)}" aria-label="Nombre">
       <select class="inp full" id="new-muscle" aria-label="Grupo muscular">
         ${MUSCLE_GROUPS.map(m=>`<option value="${m}">${m}</option>`).join("")}</select>
+      <label class="check"><input type="checkbox" id="new-uni">
+        <span>Unilateral <span class="check-hint">(se hace lado a lado)</span></span></label>
       <div class="row g2">
         <button class="btn-sm" id="new-save" style="flex:1;padding:9px">Añadir a la sesión</button>
         <button class="ghost" id="new-cancel">Cancelar</button>
@@ -1662,6 +1714,8 @@ function pickerHTML(){
           <input class="inp full" id="edit-name" value="${esc(e.name)}" aria-label="Nombre">
           <select class="inp full" id="edit-muscle" aria-label="Grupo muscular">
             ${MUSCLE_GROUPS.map(m=>`<option value="${m}" ${m===e.muscle?"selected":""}>${m}</option>`).join("")}</select>
+          <label class="check"><input type="checkbox" id="edit-uni" ${e.uni?"checked":""}>
+            <span>Unilateral <span class="check-hint">(se hace lado a lado)</span></span></label>
           <div class="row g2"><button class="btn-sm" id="edit-save" style="flex:1">Guardar cambios</button>
           <button class="ghost" id="edit-cancel">Cancelar</button></div></div>`;
         if(confirmingEx===e.id) return `<div class="confirm-box">
@@ -1672,7 +1726,7 @@ function pickerHTML(){
         return `<div class="ex-row">
           <button class="ex-pick" data-pick="${e.id}">
             <span class="ex-pick-name">${esc(e.name)}</span>
-            <span class="tag" style="background:${c}${theme().tagAlpha};color:${c}">${esc(e.muscle)}</span>
+            <span class="tag" style="background:${c}${theme().tagAlpha};color:${c}">${esc(e.muscle)}</span>${e.uni?'<span class="tag tag-uni">×2</span>':""}
           </button>
           <div class="ex-actions">
             <button class="iconbtn" data-edit-ex="${e.id}" aria-label="Editar">${I.pencil}</button>
@@ -1934,27 +1988,44 @@ function logrosCard(){
     logros.push({id, nombre:nombre||"(ejercicio eliminado)", musculo, ...b});
   });
   if(logros.length===0) return "";
-  logros.sort((a,b)=> a.date<b.date ? 1 : (a.date>b.date ? -1 : b.e1rm-a.e1rm));
+  // Agrupados por grupo muscular, en el mismo orden que el resto de la app.
+  // Dentro de cada grupo, el levantamiento más fuerte primero.
+  const porGrupo={};
+  logros.forEach(l=>{
+    const g = l.musculo && MUSCLE_GROUPS.includes(l.musculo) ? l.musculo : "Otros";
+    (porGrupo[g]=porGrupo[g]||[]).push(l);
+  });
+  Object.values(porGrupo).forEach(arr=>arr.sort((a,b)=>b.e1rm-a.e1rm));
+  const grupos=[...MUSCLE_GROUPS.filter(g=>porGrupo[g]), ...(porGrupo["Otros"]?["Otros"]:[])];
 
   return `<div class="card pad">
     <div class="logros-head">
       <p class="card-title" style="margin:0">Récords por ejercicio</p>
       <span class="logros-count">${logros.length}</span>
     </div>
-    <div class="logros">
-      ${logros.map(l=>{
-        const c = l.musculo ? muscleColor(l.musculo) : "var(--text-ghost)";
-        const esActual = l.id===S.progEx;
-        return `<button class="logro${esActual?" on":""}" data-logro="${l.id}"
-          style="border-left-color:${c}">
-          <span class="logro-main">
-            <span class="logro-name">${esc(l.nombre)}</span>
-            <span class="logro-sub">${l.weight}×${l.reps}<span class="logro-sep">·</span>${fmtDate(l.date)}</span>
-          </span>
-          <span class="logro-val">${nf(Math.round(l.e1rm))}<span class="logro-unit">kg</span></span>
-        </button>`;
-      }).join("")}
-    </div>
+    ${grupos.map(g=>{
+      const c = g==="Otros" ? "var(--text-ghost)" : muscleColor(g);
+      return `<div class="logro-grupo">
+        <div class="logro-grupo-head">
+          <span class="logro-grupo-bar" style="background:${c}"></span>
+          <span class="logro-grupo-name">${esc(g)}</span>
+          <span class="logro-grupo-n">${porGrupo[g].length}</span>
+        </div>
+        <div class="logros">
+          ${porGrupo[g].map(l=>{
+            const esActual = l.id===S.progEx;
+            return `<button class="logro${esActual?" on":""}" data-logro="${l.id}"
+              style="border-left-color:${c}">
+              <span class="logro-main">
+                <span class="logro-name">${esc(l.nombre)}</span>
+                <span class="logro-sub">${l.weight}×${l.reps}<span class="logro-sep">·</span>${fmtDate(l.date)}</span>
+              </span>
+              <span class="logro-val">${nf(Math.round(l.e1rm))}<span class="logro-unit">kg</span></span>
+            </button>`;
+          }).join("")}
+        </div>
+      </div>`;
+    }).join("")}
     <p class="logros-foot">1RM estimado a partir de la mejor serie de cada ejercicio.
       Pulsa uno para ver su gráfica arriba.</p>
   </div>`;
@@ -2081,7 +2152,7 @@ function sessionCard(s,n){
         <span class="hist-num">#${n}</span><span class="hist-day">${s.day}</span>
         <span class="hist-date">${fmtDate(s.date)}</span></span>
       <span class="row g2" style="flex-shrink:0">
-        <span style="font-size:12px;color:var(--text-muted)">${s.entries.length} ej.</span>
+        <span style="font-size:12px;color:var(--text-muted)">${sessionMinutes(s,bodyOf(S.activeId))>0?Math.round(sessionMinutes(s,bodyOf(S.activeId)))+" min · ":""}${s.entries.length} ej.</span>
         <span class="iconbtn dg" data-del-sess="${s.id}" role="button" tabindex="0" aria-label="Eliminar sesión">${I.trash}</span>
       </span>
     </button>
@@ -2331,12 +2402,21 @@ function wire(){
     // Los pesos y reps NO se copian como valores: pasan a ser sugerencia (gw/gr),
     // así ves lo que hiciste pero el registro empieza vacío.
     ensureSession(c=>{
-      c.entries = src.entries.map(e=>({
-        id:uid(), exerciseId:e.exerciseId, name:e.name, muscle:e.muscle,
-        sets: e.sets.map(st=>({id:uid(), weight:"", reps:"",
-          gw: st.weight!==""?st.weight:undefined,
-          gr: st.reps!==""?st.reps:undefined}))
-      }));
+      c.entries = src.entries.map(e=>{
+        // Qué ejercicios hacer viene de la sesión copiada, pero de cada uno se
+        // reproduce tu MEJOR sesión tal cual: mismo número de series, con sus
+        // pesos y reps en gris. Es la sesión exacta que hay que batir.
+        const mejor = bestEntryFor(e.exerciseId);
+        const ref = (mejor && mejor.entry.sets.length) ? mejor.entry.sets : e.sets;
+        const ex = S.exercises.find(x=>x.id===e.exerciseId);
+        return {
+          id:uid(), exerciseId:e.exerciseId, name:e.name, muscle:e.muscle,
+          uni: (ex && ex.uni) ?? e.uni ?? false,
+          sets: ref.map(r=>({id:uid(), weight:"", reps:"",
+            gw: (r && r.weight!=="") ? r.weight : undefined,
+            gr: (r && r.reps!=="") ? r.reps : undefined}))
+        };
+      });
       c.copiedFrom = src.date;
     });
     S.copying=false;
@@ -2408,16 +2488,16 @@ function wire(){
   }
   all("[data-pick]",b=>b.onclick=()=>{
     const ex=S.exercises.find(e=>e.id===b.dataset.pick); if(!ex)return;
-    ensureSession(c=>c.entries.push({id:uid(),exerciseId:ex.id,name:ex.name,muscle:ex.muscle,sets:[{id:uid(),weight:"",reps:""}]}));
+    ensureSession(c=>c.entries.push({id:uid(),exerciseId:ex.id,name:ex.name,muscle:ex.muscle,uni:!!ex.uni,sets:[{id:uid(),weight:"",reps:""}]}));
     S.showPicker=false;pickerQuery="";renderMain();
   });
   if($("new-ex")) $("new-ex").onclick=()=>{pickerCreating=true;renderMain();};
   if($("new-cancel")) $("new-cancel").onclick=()=>{pickerCreating=false;renderMain();};
   if($("new-save")) $("new-save").onclick=()=>{
     const name=$("new-name").value.trim(); if(!name)return;
-    const ex={id:uid(),name,muscle:$("new-muscle").value};
+    const ex={id:uid(),name,muscle:$("new-muscle").value,uni:$("new-uni").checked};
     S.exercises.push(ex); store.set("exercises",S.exercises);
-    ensureSession(c=>c.entries.push({id:uid(),exerciseId:ex.id,name:ex.name,muscle:ex.muscle,sets:[{id:uid(),weight:"",reps:""}]}));
+    ensureSession(c=>c.entries.push({id:uid(),exerciseId:ex.id,name:ex.name,muscle:ex.muscle,uni:!!ex.uni,sets:[{id:uid(),weight:"",reps:""}]}));
     pickerCreating=false;S.showPicker=false;pickerQuery="";renderMain();
   };
   all("[data-edit-ex]",b=>b.onclick=()=>{editingEx=b.dataset.editEx;confirmingEx=null;renderMain();});
@@ -2425,7 +2505,7 @@ function wire(){
   if($("edit-save")) $("edit-save").onclick=()=>{
     const ex=S.exercises.find(e=>e.id===editingEx); if(!ex)return;
     const n=$("edit-name").value.trim(); if(!n)return;
-    ex.name=n; ex.muscle=$("edit-muscle").value;
+    ex.name=n; ex.muscle=$("edit-muscle").value; ex.uni=$("edit-uni").checked;
     store.set("exercises",S.exercises); editingEx=null; toast("Ejercicio actualizado"); renderMain();
   };
   all("[data-ask-del]",b=>b.onclick=()=>{confirmingEx=b.dataset.askDel;editingEx=null;renderMain();});
