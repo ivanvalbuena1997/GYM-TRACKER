@@ -238,6 +238,12 @@ button:disabled{opacity:.5;cursor:default}
 /* Listado de récords. Reutiliza el lenguaje de los bloques de ejercicio y del
    historial: tarjeta con barra lateral del color del grupo muscular. Todos los
    colores salen de variables del tema, así funciona en las cuatro apariencias. */
+.sem-nav{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.sem-info{flex:1;min-width:0;text-align:center}
+.sem-fecha{font-size:12px;color:var(--text-faint);margin:4px 0 0}
+.sem-nav .iconbtn{padding:6px;border:1px solid var(--border);border-radius:3px;flex-shrink:0}
+.sem-nav .iconbtn:disabled{opacity:.25;cursor:default}
+.sem-nav .iconbtn:disabled:hover{color:var(--text-ghost)}
 .logros-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
 .logros-count{font-size:11px;color:var(--text-faint);font-variant-numeric:tabular-nums;
   border:1px solid var(--border);border-radius:20px;padding:1px 8px;flex-shrink:0}
@@ -481,7 +487,12 @@ const LEGACY_NAMES = {"Yo":"Iván","Mi pareja":"Jen"};
 const RANGES = [{id:"1m",label:"Último mes",m:1},{id:"6m",label:"6 meses",m:6},{id:"1y",label:"Último año",m:12},{id:"all",label:"Desde el inicio",m:null}];
 const DEFAULT_GOAL = 10000;
 
-const APP_VERSION = "1.8";
+// Antes de esta fecha no hay datos reales en la app, solo pruebas. El gráfico
+// de calorías los omite para no mostrar un suelo plano de metabolismo basal
+// en días que nunca se registraron.
+const DATA_START = "2026-09-01";
+
+const APP_VERSION = "1.8.1";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -1183,7 +1194,7 @@ const S = {
   // vista de registro
   date: todayISO(), showPicker:false, openEx:{}, saveState:"idle",
   // otras vistas
-  progRange:"6m", volRange:"6m", progEx:null,
+  progRange:"6m", volRange:"6m", progEx:null, lmWeek:null,
   openYears:{}, openMonths:{}, openSession:null,
   stepDate: todayISO(), editingGoal:false, editingBody:false, stepsRange:"1m", calRange:"1m",
   renaming:false, pickingSkin:false, copying:false, showData:false, importing:false
@@ -1253,6 +1264,8 @@ const I = {
   mail:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>',
   download:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
   upload:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  prev:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
+  next:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
   up:'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>',
   down2:'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
   copy:'<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
@@ -1823,11 +1836,12 @@ function stackedBars(rows, keys){
    por semana en 6 meses y por mes en 1 año. Usar siempre "media diaria" hace
    que las barras sean comparables entre periodos y que la línea de objetivo
    siga teniendo sentido. */
-function bucketDaily(rangeId, valueOf){
+function bucketDaily(rangeId, valueOf, desde){
   const cfg={ "1m":{days:30,by:"day"}, "6m":{days:182,by:"week"}, "1y":{days:365,by:"month"} }[rangeId] || {days:30,by:"day"};
   const buckets=new Map();
   for(let i=cfg.days-1;i>=0;i--){
     const iso=daysAgo(i);
+    if(desde && iso<desde) continue;      // días anteriores al inicio de datos
     let key,label,full;
     if(cfg.by==="day"){ key=iso; label=parseISO(iso).toLocaleDateString("es-ES",{day:"numeric",month:"short"}); full=fmtDate(iso); }
     else if(cfg.by==="week"){ key=weekKey(iso); label=parseISO(key).toLocaleDateString("es-ES",{day:"numeric",month:"short"}); full="Semana del "+fmtDate(key); }
@@ -2064,13 +2078,23 @@ function viewVolume(){
 
 function landmarksCard(byWeek,weeks){
   if(weeks.length===0) return "";
-  const last=weeks[weeks.length-1];
+  // La semana elegida se recuerda; si sale del rango visible, se vuelve a la última
+  let idx = weeks.indexOf(S.lmWeek);
+  if(idx<0) idx = weeks.length-1;
+  const last = weeks[idx];
+  const esUltima = idx===weeks.length-1;
   const cur=byWeek[last]||{};
   const rows=MUSCLE_GROUPS.map(m=>({m,sets:cur[m]||0,lm:SET_LANDMARKS[m]}))
     .filter(r=>r.sets>0 || r.lm.mev>0);
   return `<div class="card pad">
-    <p class="card-title">Última semana vs. rango recomendado</p>
-    <p style="font-size:12px;color:var(--text-faint);margin:-6px 0 14px">Semana del ${fmtDate(last)}</p>
+    <div class="sem-nav">
+      <button class="iconbtn" data-sem="-1" ${idx===0?"disabled":""} aria-label="Semana anterior">${I.prev}</button>
+      <div class="sem-info">
+        <p class="card-title" style="margin:0">${esUltima?"Última semana":"Semana"} vs. rango recomendado</p>
+        <p class="sem-fecha">Semana del ${fmtDate(last)}${esUltima?"":` · ${weeks.length-1-idx} ${weeks.length-1-idx===1?"semana":"semanas"} atrás`}</p>
+      </div>
+      <button class="iconbtn" data-sem="1" ${esUltima?"disabled":""} aria-label="Semana siguiente">${I.next}</button>
+    </div>
     <div class="col" style="gap:11px">
       ${rows.map(r=>{
         const st=volumeStatus(r.sets,r.lm);
@@ -2347,11 +2371,13 @@ function viewSteps(){
         <p class="card-title" style="margin:0">Calorías${S.calRange!=="1m"?" · media diaria":""}</p>
         ${rangeSelector("cal",S.calRange,["1m","6m","1y"])}
       </div>
-      ${bodyComplete(b)
+      ${bodyComplete(b) && bucketDaily(S.calRange,()=>0,DATA_START).length===0
+        ? `<p style="font-size:13px;color:var(--text-faint);margin:0">Sin datos en este periodo.</p>`
+        : bodyComplete(b)
         ? simpleBars(bucketDaily(S.calRange, d=>{
             const sess=S.sessions.find(x=>x.date===d);
             return (bmr(b)||0) + stepsKcal(S.steps[d]||0,b) + trainingKcal(sess,b);
-          }), {unit:"kcal", color:theme().chart.secondary})
+          }, DATA_START), {unit:"kcal", color:theme().chart.secondary})
         : `<p style="font-size:13px;color:var(--text-faint);margin:0">Añade tus datos corporales para ver el gasto calórico.</p>`}
     </div>
   </div>`;
@@ -2559,7 +2585,7 @@ function wire(){
   all("[data-range]",b=>b.onclick=()=>{
     const [which,val]=b.dataset.range.split(":");
     if(which==="prog") S.progRange=val;
-    else if(which==="vol") S.volRange=val;
+    else if(which==="vol"){ S.volRange=val; S.lmWeek=null; }
     else if(which==="steps") S.stepsRange=val;
     else if(which==="cal") S.calRange=val;
     renderMain();
@@ -2576,6 +2602,18 @@ function wire(){
     showTip(`<div class="tip-date">${esc(r.full)}</div>${detalle}`, e, el.ownerSVGElement);
   });
   if($("prog-select")) $("prog-select").onchange=e=>{S.progEx=e.target.value;renderMain();};
+  all("[data-sem]",b=>b.onclick=()=>{
+    if(b.disabled) return;
+    // Se recalculan las semanas visibles con el rango actual
+    const raw=cutoffFor(RANGES.find(r=>r.id===S.volRange).m);
+    const cut=raw?weekKey(raw):null;
+    const enRango=cut? S.sessions.filter(x=>x.date>=cut) : S.sessions;
+    const semanas=[...new Set(enRango.map(x=>weekKey(x.date)))].sort();
+    let i=semanas.indexOf(S.lmWeek);
+    if(i<0) i=semanas.length-1;
+    const j=i+parseInt(b.dataset.sem,10);
+    if(j>=0 && j<semanas.length){ S.lmWeek=semanas[j]; renderMain(); }
+  });
   all("[data-logro]",b=>b.onclick=()=>{
     S.progEx=b.dataset.logro;
     renderMain();
