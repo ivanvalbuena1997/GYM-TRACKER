@@ -238,6 +238,16 @@ button:disabled{opacity:.5;cursor:default}
 /* Listado de récords. Reutiliza el lenguaje de los bloques de ejercicio y del
    historial: tarjeta con barra lateral del color del grupo muscular. Todos los
    colores salen de variables del tema, así funciona en las cuatro apariencias. */
+.score{display:flex;align-items:center;gap:14px;padding:12px 0 16px;margin-bottom:14px;
+  border-bottom:1px solid var(--border-soft)}
+.score-num{font-size:32px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em;flex-shrink:0}
+.score-max{font-size:14px;font-weight:400;color:var(--text-ghost);letter-spacing:0}
+.score-info{flex:1;min-width:0}
+.score-txt{font-size:13px;font-weight:600;margin-bottom:7px}
+.score-bar{height:5px;background:var(--border-soft);border-radius:3px;overflow:hidden}
+.score-bar>div{height:100%;border-radius:3px;transition:width .3s}
+.score-pct{color:var(--text-ghost);font-size:11px;margin-left:5px}
 .sem-nav{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .sem-info{flex:1;min-width:0;text-align:center}
 .sem-fecha{font-size:12px;color:var(--text-faint);margin:4px 0 0}
@@ -417,18 +427,26 @@ const SET_LANDMARKS = {
   "Core":           {mev:0,  min:8,  max:16, mrv:25},
   "Antebrazo":      {mev:0,  min:8,  max:12, mrv:16}
 };
+/* Nota semanal (orientativa, no científica).
+   Cada grupo puntúa según el rango en el que cae, y los grupos prioritarios de
+   la rutina pesan 1,5 veces más. Core y antebrazo no puntúan mientras no se
+   entrenen directamente: lastrarían la nota por algo sobre lo que no se actúa. */
+const GRUPOS_PRIORITARIOS = new Set(["Pecho","Espalda","Hombro","Bíceps","Tríceps"]);
+const PESO_PRIORITARIO = 1.5;
+const GRUPOS_OPCIONALES = new Set(["Core","Antebrazo"]);
+
 function volumeStatus(sets, lm){
-  if(!lm) return {label:"", color:"var(--text-muted)"};
-  if(sets===0) return {label:"sin trabajar", color:"var(--text-ghost)"};
+  if(!lm) return {label:"", color:"var(--text-muted)", mark:"", score:0};
+  if(sets===0) return {label:"sin trabajar", color:"var(--text-ghost)", mark:"", score:0};
   // Acento = dentro del rango productivo; rojo = fuera. El rojo se toma del
   // tema porque en los fondos claros hace falta uno más oscuro para que
   // contraste. La flecha añade una pista que no depende del color: en el tema
   // Medianoche el acento ES ámbar, así que fiarlo todo al color no bastaba.
-  if(sets < lm.mev) return {label:"por debajo del mínimo", color:"var(--bad)", mark:"▼"};
-  if(sets < lm.min) return {label:"efectivo", color:"var(--text-dim)", mark:""};
-  if(sets <= lm.max) return {label:"en rango óptimo", color:"var(--accent)", mark:"✓"};
-  if(sets <= lm.mrv) return {label:"alto", color:"var(--bad)", mark:"▲"};
-  return {label:"por encima del máximo", color:"var(--bad-strong)", mark:"▲▲"};
+  if(sets < lm.mev) return {label:"por debajo del mínimo", color:"var(--bad)", mark:"▼", score:50};
+  if(sets < lm.min) return {label:"efectivo", color:"var(--text-dim)", mark:"", score:80};
+  if(sets <= lm.max) return {label:"en rango óptimo", color:"var(--accent)", mark:"✓", score:100};
+  if(sets <= lm.mrv) return {label:"alto", color:"var(--bad)", mark:"▲", score:80};
+  return {label:"por encima del máximo", color:"var(--bad-strong)", mark:"▲▲", score:50};
 }
 
 const THEMES = {
@@ -492,7 +510,7 @@ const DEFAULT_GOAL = 10000;
 // en días que nunca se registraron.
 const DATA_START = "2026-09-01";
 
-const APP_VERSION = "1.8.1";
+const APP_VERSION = "1.8.2";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -1910,6 +1928,8 @@ function viewProgress(){
   const cut=cutoffFor(RANGES.find(r=>r.id===S.progRange).m);
   const inRange=cut? S.sessions.filter(s=>s.date>=cut):S.sessions;
   const ids=new Set(); inRange.forEach(s=>s.entries.forEach(e=>ids.add(e.exerciseId)));
+  // Se conserva para elegir un ejercicio por defecto: la navegación ahora se
+  // hace desde la lista de récords de abajo, no con un desplegable.
   const list=S.exercises.filter(e=>ids.has(e.id));
   if(!S.progEx || !ids.has(S.progEx)) S.progEx=list[0]?.id||null;
 
@@ -1930,17 +1950,6 @@ function viewProgress(){
 
   return `<div class="col g4">
     ${rangeSelector("prog",S.progRange)}
-    <div class="wraprow">
-      <select class="inp" id="prog-select" style="flex:1;min-width:200px" aria-label="Elegir ejercicio">
-        ${MUSCLE_GROUPS.map(m=>{
-          const ofM=list.filter(e=>e.muscle===m);
-          if(!ofM.length) return "";
-          return `<optgroup label="${esc(m)}">${ofM.map(e=>
-            `<option value="${e.id}" ${e.id===S.progEx?"selected":""}>${esc(e.name)}</option>`).join("")}</optgroup>`;
-        }).join("")}
-      </select>
-      <span style="font-size:12px;color:var(--text-faint)">${list.length} ejerc.</span>
-    </div>
     ${prCard()}
     ${pts.length<2
       ? `<div class="empty">${I.trend}<h3>Necesitas al menos 2 sesiones</h3><p>Sigue registrando este ejercicio para ver la tendencia.</p></div>`
@@ -2076,6 +2085,33 @@ function viewVolume(){
   </div>`;
 }
 
+// Media ponderada de los grupos que cuentan esa semana
+function weekScore(cur){
+  let puntos=0, pesos=0;
+  const detalle=[];
+  MUSCLE_GROUPS.forEach(m=>{
+    const lm=SET_LANDMARKS[m];
+    if(!lm) return;
+    const sets=cur[m]||0;
+    // Core y antebrazo solo entran si se entrenaron
+    if(GRUPOS_OPCIONALES.has(m) && sets===0) return;
+    const st=volumeStatus(sets,lm);
+    const peso=GRUPOS_PRIORITARIOS.has(m) ? PESO_PRIORITARIO : 1;
+    puntos += st.score*peso;
+    pesos  += peso;
+    detalle.push({m, sets, score:st.score, peso});
+  });
+  if(pesos===0) return null;
+  return {nota: Math.round(puntos/pesos), detalle, pesos};
+}
+
+function scoreTier(n){
+  if(n>=85) return {txt:"Semana muy completa", color:"var(--accent)"};
+  if(n>=70) return {txt:"Semana correcta",     color:"var(--text-2)"};
+  if(n>=50) return {txt:"Mejorable",           color:"#ffb23d"};
+  return {txt:"Semana floja", color:"var(--bad)"};
+}
+
 function landmarksCard(byWeek,weeks){
   if(weeks.length===0) return "";
   // La semana elegida se recuerda; si sale del rango visible, se vuelve a la última
@@ -2095,6 +2131,15 @@ function landmarksCard(byWeek,weeks){
       </div>
       <button class="iconbtn" data-sem="1" ${esUltima?"disabled":""} aria-label="Semana siguiente">${I.next}</button>
     </div>
+    ${(()=>{ const sc=weekScore(cur); if(!sc) return "";
+      const t=scoreTier(sc.nota);
+      return `<div class="score">
+        <div class="score-num" style="color:${t.color}">${sc.nota}<span class="score-max">/100</span></div>
+        <div class="score-info">
+          <div class="score-txt" style="color:${t.color}">${t.txt}</div>
+          <div class="score-bar"><div style="width:${sc.nota}%;background:${t.color}"></div></div>
+        </div>
+      </div>`; })()}
     <div class="col" style="gap:11px">
       ${rows.map(r=>{
         const st=volumeStatus(r.sets,r.lm);
@@ -2104,7 +2149,8 @@ function landmarksCard(byWeek,weeks){
           <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px">
             <span style="font-size:13px;color:var(--text-2)">${esc(r.m)}</span>
             <span style="font-size:12px;color:${st.color};font-variant-numeric:tabular-nums">
-              <strong>${r.sets}</strong> <span style="color:var(--text-ghost)">/ ${r.lm.min}-${r.lm.max}</span></span>
+              <strong>${r.sets}</strong> <span style="color:var(--text-ghost)">/ ${r.lm.min}-${r.lm.max}</span>
+              ${GRUPOS_OPCIONALES.has(r.m)&&r.sets===0?"":`<span class="score-pct">${st.score}%</span>`}</span>
           </div>
           <div style="position:relative;height:7px;background:var(--border-soft);border-radius:4px;overflow:hidden">
             <div style="position:absolute;left:${pc(r.lm.min)}%;width:${pc(r.lm.max)-pc(r.lm.min)}%;height:100%;
@@ -2117,8 +2163,9 @@ function landmarksCard(byWeek,weeks){
       }).join("")}
     </div>
     <p style="font-size:11px;color:var(--text-ghost);margin:14px 0 0;line-height:1.5">
-      La franja clara marca el rango productivo semanal (MAV). Son referencias orientativas del marco
-      MEV/MAV/MRV: tu capacidad de recuperación real manda por encima de la tabla.</p>
+      La franja clara marca el rango productivo semanal (MAV). La nota pondera cada grupo según su
+      rango, dando 1,5 veces más peso a pecho, espalda, hombro, bíceps y tríceps; core y antebrazo
+      solo cuentan si los entrenas. Es orientativa: progresar en carga importa más que cuadrar la tabla.</p>
   </div>`;
 }
 
@@ -2601,7 +2648,6 @@ function wire(){
          <div class="tip-row"><span>Días con datos</span><span class="tip-val">${r.logged}/${r.days}</span></div>`;
     showTip(`<div class="tip-date">${esc(r.full)}</div>${detalle}`, e, el.ownerSVGElement);
   });
-  if($("prog-select")) $("prog-select").onchange=e=>{S.progEx=e.target.value;renderMain();};
   all("[data-sem]",b=>b.onclick=()=>{
     if(b.disabled) return;
     // Se recalculan las semanas visibles con el rango actual
