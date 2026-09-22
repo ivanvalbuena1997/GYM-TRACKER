@@ -366,6 +366,29 @@ body.light .rest{box-shadow:0 14px 44px rgba(90,80,60,.28)}
   border:1px dashed var(--border);border-radius:4px}
 .empty h3{color:var(--text-2);font-weight:500;margin:14px 0 6px;font-size:15px}
 .empty p{font-size:13px;color:var(--text-faint);max-width:320px;line-height:1.6;margin:0}
+.cardio-item{padding:12px;border-radius:4px;background:var(--input-bg);border:1px solid var(--border-soft);
+  border-left:3px solid var(--accent);margin-bottom:8px}
+.cardio-item:last-of-type{margin-bottom:0}
+.cardio-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.cardio-tipo{font-size:14px;font-weight:600;color:var(--text);flex:1}
+.cardio-kcal{font-size:13px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
+.cardio-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px 12px}
+.cf{display:flex;flex-direction:column;gap:4px;min-width:0}
+.cf-lbl{font-size:11px;color:var(--text-muted)}
+.cf-in{display:flex;align-items:center;gap:6px}
+.cf-in .inp{width:100%;min-width:0}
+.cf select.inp{width:100%}
+.cardio-nota{font-size:11px;color:var(--text-faint);margin:10px 0 0}
+.reglas{margin-top:2px}
+.reglas-tog{display:flex;align-items:center;gap:7px;background:none;border:none;padding:6px 0;
+  font-size:12px;color:var(--text-faint);font-family:inherit;letter-spacing:.02em}
+.reglas-tog:hover{color:var(--text-2)}
+.reglas-lista{margin:4px 0 0;padding:12px 14px 12px 30px;list-style:disc;
+  border-left:2px solid var(--border);border-radius:0 3px 3px 0;
+  background:color-mix(in srgb,var(--text) 3%,transparent)}
+.reglas-lista li{font-size:12.5px;color:var(--text-2);line-height:1.6;margin-bottom:5px}
+.reglas-lista li:last-child{margin-bottom:0}
+.reglas-lista strong{color:var(--text);font-weight:600}
 .savestate{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text-faint);min-height:18px}
 .savedot{width:6px;height:6px;border-radius:50%;background:var(--text-ghost)}
 .savedot.on{background:var(--accent);animation:pulse 1s ease-in-out infinite}
@@ -510,7 +533,7 @@ const DEFAULT_GOAL = 10000;
 // en días que nunca se registraron.
 const DATA_START = "2026-09-01";
 
-const APP_VERSION = "1.8.2";
+const APP_VERSION = "1.9";
 
 /* ============================ Utilidades ============================ */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -1205,6 +1228,89 @@ document.addEventListener("visibilitychange",()=>{
   }
 });
 
+/* ==================== Cardio ====================
+   Fórmulas del ACSM, en versión NETA (sin el componente de reposo), igual que
+   pasos y pesas: el metabolismo basal ya se suma aparte en el total del día.
+   · Cinta: VO2 = 0,1·v + 1,8·v·pendiente   (v en m/min, pendiente en decimal)
+   · Bici:  VO2 = 1,8·vatios·6,12/peso + 3,5
+   · kcal  = VO2 · peso · minutos / 1000 · 5
+   Validado con una sesión real: la fórmula bruta dio 182 kcal y la cinta 180.  */
+const CARDIO_PREFIX = "cardio:";
+// Respaldo para la bici si no muestra vatios (compendio de Ainsworth)
+const BICI_MET = {suave:5.5, moderada:6.8, intensa:8.8};
+
+function loadCardio(pid){
+  const out={};
+  store.keys(`${CARDIO_PREFIX}${pid}:`).forEach(k=>{
+    const o=store.get(k,{});
+    if(o && typeof o==="object") Object.entries(o).forEach(([d,lista])=>{
+      if(Array.isArray(lista)) out[d]=lista;
+    });
+  });
+  return out;
+}
+
+function saveCardioMonth(pid, month, all){
+  const bucket={};
+  Object.entries(all).forEach(([d,lista])=>{
+    if(monthOf(d)===month && Array.isArray(lista) && lista.length) bucket[d]=lista;
+  });
+  if(Object.keys(bucket).length===0) store.del(`${CARDIO_PREFIX}${pid}:${month}`);
+  else store.set(`${CARDIO_PREFIX}${pid}:${month}`, bucket);
+}
+
+const num0 = v => { const n=parseFloat(String(v??"").replace(",",".")); return Number.isFinite(n)&&n>0?n:0; };
+
+// Minutos: los indicados o, en la cinta, deducidos de distancia y velocidad
+function cardioMinutes(c){
+  const m=num0(c.min);
+  if(m) return m;
+  if(c.type==="cinta" && num0(c.km) && num0(c.speed)) return num0(c.km)/num0(c.speed)*60;
+  return 0;
+}
+
+function cardioKcal(c, b){
+  if(!bodyComplete(b)) return 0;
+  const W=b.weight, min=cardioMinutes(c);
+  if(!min) return 0;
+  if(c.type==="cinta"){
+    const v=num0(c.speed); if(!v) return 0;
+    const S=v*1000/60, G=num0(c.incline)/100;
+    return Math.round((0.1*S + 1.8*S*G) * W * min / 1000 * 5);
+  }
+  const w=num0(c.watts);
+  if(w) return Math.round((1.8*w*6.12/W + 3.5) * W * min / 1000 * 5);
+  return Math.round(netKcal(BICI_MET[c.level]||BICI_MET.moderada, W, min));
+}
+
+// Pasos de la cinta que ya entraron en el recuento diario y hay que descontar.
+// Solo si llevabas el dispositivo; si metes los pasos del reloj se usan tal
+// cual, y si no, se estiman con la distancia y tu zancada.
+function cardioSteps(c, b){
+  if(c.type!=="cinta" || c.dev===false) return 0;
+  const p=num0(c.steps);
+  if(p) return Math.round(p);
+  let km=num0(c.km);
+  if(!km && num0(c.speed)) km=num0(c.speed)*cardioMinutes(c)/60;
+  if(!km || !b.height) return 0;
+  return Math.round(km*1000 / (b.height*STRIDE_FACTOR/100));
+}
+
+// Gasto completo de un día. Tarjeta y gráfico usan ESTA función, para que
+// nunca puedan dar cifras distintas.
+function dayKcal(d, b){
+  const lista=(S.cardio&&S.cardio[d])||[];
+  const pasosDia=S.steps[d]||0;
+  const desc=Math.min(pasosDia, lista.reduce((a,c)=>a+cardioSteps(c,b),0));
+  const kSteps=stepsKcal(pasosDia-desc, b);
+  const sess=S.sessions.find(x=>x.date===d);
+  const kTrain=trainingKcal(sess,b);
+  const kCardio=lista.reduce((a,c)=>a+cardioKcal(c,b),0);
+  const rest=bmr(b)||0;
+  return {rest, kSteps, kTrain, kCardio, desc, pasosDia, sess, lista,
+          total: rest+kSteps+kTrain+kCardio};
+}
+
 /* ============================ Estado ============================ */
 const S = {
   profiles: [], activeId: null, exercises: [], sessions: [], steps: {}, goal: DEFAULT_GOAL,
@@ -1214,7 +1320,7 @@ const S = {
   // otras vistas
   progRange:"6m", volRange:"6m", progEx:null, lmWeek:null,
   openYears:{}, openMonths:{}, openSession:null,
-  stepDate: todayISO(), editingGoal:false, editingBody:false, stepsRange:"1m", calRange:"1m",
+  stepDate: todayISO(), editingGoal:false, editingBody:false, cardio:{}, stepsRange:"1m", calRange:"1m",
   renaming:false, pickingSkin:false, copying:false, showData:false, importing:false
 };
 
@@ -1242,6 +1348,7 @@ function switchProfile(pid){
   store.set("activeProfile", pid);
   S.sessions = loadSessions(pid);
   S.steps = loadSteps(pid);
+  S.cardio = loadCardio(pid);
   S.goal = store.get(`stepsGoal:${pid}`, DEFAULT_GOAL);
   S.progEx=null; S.openSession=null; S.saveState="idle";
   S.openYears={}; S.openMonths={};
@@ -1619,6 +1726,17 @@ function viewLog(){
     </div>
 
     ${entries.length? `<div class="savestate" id="savestate" style="align-self:flex-end" aria-live="polite">${saveStateHTML()}</div>`:""}
+
+    <div class="reglas">
+      <button class="reglas-tog" id="reglas-tog">
+        ${store.get("verReglas",false)?I.down:I.right}
+        <span>Criterios de registro</span>
+      </button>
+      ${store.get("verReglas",false)?`<ul class="reglas-lista">
+        <li><strong>El peso de la barra cuenta.</strong> Apunta disco + barra.</li>
+        <li><strong>Con mancuernas, el peso de una sola,</strong> no el total de las dos.</li>
+      </ul>`:""}
+    </div>
   </div>`;
 }
 
@@ -2262,13 +2380,10 @@ function caloriesCard(){
       <button class="btn-sm" id="body-edit">Añadir mis datos</button>
     </div>` + (S.editingBody?bodyForm(b):"");
   }
-  const rest=bmr(b);
-  const steps=S.steps[d]||0;
-  const kcalSteps=stepsKcal(steps,b);
-  const sess=S.sessions.find(x=>x.date===d);
-  const kcalTrain=trainingKcal(sess,b);
+  const k=dayKcal(d,b);
+  const rest=k.rest, kcalSteps=k.kSteps, kcalTrain=k.kTrain, kcalCardio=k.kCardio;
+  const steps=k.pasosDia, sess=k.sess, total=k.total;
   const mins=sess?Math.round(sessionMinutes(sess,b)):0;
-  const total=rest+kcalSteps+kcalTrain;
   const isToday=d===todayISO();
 
   return `<div class="card pad">
@@ -2285,7 +2400,13 @@ function caloriesCard(){
       <div class="divider" style="height:28px"></div>
       <div><p class="stat-num" style="font-size:16px;color:${kcalTrain>0?"var(--accent)":"var(--text)"}">${nf(kcalTrain)}</p>
       <p class="stat-lbl">${sess?`Entreno · ${mins} min`:"Sin entreno"}</p></div>
+      ${kcalCardio>0?`<div class="divider" style="height:28px"></div>
+      <div><p class="stat-num" style="font-size:16px;color:var(--accent)">${nf(kcalCardio)}</p>
+      <p class="stat-lbl">Cardio</p></div>`:""}
     </div>
+    ${k.desc>0?`<p style="font-size:11px;color:var(--text-faint);margin:10px 0 0">
+      ${nf(k.desc)} pasos de la cinta se calculan con la fórmula de la cinta y no como pasos,
+      para no contarlos dos veces.</p>`:""}
     ${sess?(()=>{const sp=sessionSplit(sess,b);return `
       <p style="font-size:11px;color:var(--text-faint);margin:12px 0 0;padding-top:10px;border-top:1px solid var(--border-soft)">
         ${sp.sets} series · ${Math.round(sp.work)} min de trabajo (6 MET) + ${Math.round(sp.rest)} min de descanso (1,5 MET)</p>`;})():""}
@@ -2322,6 +2443,66 @@ function bodyForm(b){
       <button class="btn-sm" id="body-save" style="flex:1;padding:9px">Guardar</button>
       <button class="ghost" id="body-cancel">Cancelar</button>
     </div>
+  </div>`;
+}
+
+function cardioCard(){
+  const b=bodyOf(S.activeId);
+  const d=S.stepDate;
+  const lista=S.cardio[d]||[];
+  const campo=(c,k,label,unidad,paso,ph)=>`
+    <label class="cf">
+      <span class="cf-lbl">${label}</span>
+      <span class="cf-in"><input class="inp" type="number" inputmode="decimal" step="${paso}" min="0"
+        value="${c[k]??""}" placeholder="${ph||""}" data-cardio="${c.id}:${k}" aria-label="${label}">
+        <span class="unit">${unidad}</span></span>
+    </label>`;
+
+  return `<div class="card pad">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
+      <p class="card-title" style="margin:0">Cardio · ${d===todayISO()?"hoy":fmtDate(d)}</p>
+      <div class="row g2">
+        <button class="btn-sm" data-cadd="cinta">${I.plus} Cinta</button>
+        <button class="btn-sm" data-cadd="bici">${I.plus} Bici</button>
+      </div>
+    </div>
+    ${lista.length===0
+      ? `<p style="font-size:13px;color:var(--text-faint);margin:0">Sin cardio este día. Puedes añadir cinta,
+          bici o las dos.</p>`
+      : lista.map(c=>{
+        const kc=cardioKcal(c,b), mn=cardioMinutes(c), desc=cardioSteps(c,b);
+        return `<div class="cardio-item">
+          <div class="cardio-head">
+            <span class="cardio-tipo">${c.type==="cinta"?"Cinta":"Bici estática"}</span>
+            <span class="cardio-kcal">${kc?nf(kc)+" kcal":"—"}${mn?` · ${Math.round(mn)} min`:""}</span>
+            <button class="iconbtn dg" data-cdel="${c.id}" aria-label="Eliminar">${I.trash}</button>
+          </div>
+          <div class="cardio-grid">
+          ${c.type==="cinta" ? `
+            ${campo(c,"speed","Velocidad","km/h","0.1","5,1")}
+            ${campo(c,"incline","Inclinación","%","0.5","10,5")}
+            ${campo(c,"min","Minutos","min","1","20")}
+            ${campo(c,"km","o distancia","km","0.1","1,7")}
+            ${campo(c,"steps","Pasos del reloj","pasos","10","2162")}
+            <label class="check" style="grid-column:1/-1">
+              <input type="checkbox" data-cdev="${c.id}" ${c.dev===false?"":"checked"}>
+              <span>Llevaba el móvil o el reloj <span class="check-hint">(descuenta esos pasos)</span></span>
+            </label>` : `
+            ${campo(c,"min","Minutos","min","1","30")}
+            ${campo(c,"watts","Vatios","W","5","120")}
+            <label class="cf" style="grid-column:1/-1">
+              <span class="cf-lbl">Si no hay vatios, intensidad</span>
+              <select class="inp" data-clevel="${c.id}" ${num0(c.watts)?"disabled":""}>
+                ${Object.keys(BICI_MET).map(n=>`<option value="${n}" ${(c.level||"moderada")===n?"selected":""}>${n}</option>`).join("")}
+              </select>
+            </label>`}
+          </div>
+          ${desc>0?`<p class="cardio-nota">${nf(desc)} pasos descontados del recuento calórico de pasos</p>`:""}
+        </div>`;
+      }).join("")}
+    <p style="font-size:11px;color:var(--text-ghost);margin:12px 0 0;line-height:1.5">
+      Fórmulas del ACSM, en neto (el basal ya se suma aparte). En la cinta, la inclinación va en %.
+      Si pones los pasos que marcó el reloj el descuento es exacto; si no, se estima por la distancia.</p>
   </div>`;
 }
 
@@ -2391,6 +2572,7 @@ function viewSteps(){
     </div>
 
     ${caloriesCard()}
+    ${cardioCard()}
 
     <div class="card pad">
       <p class="card-title">Registrar pasos</p>
@@ -2422,8 +2604,7 @@ function viewSteps(){
         ? `<p style="font-size:13px;color:var(--text-faint);margin:0">Sin datos en este periodo.</p>`
         : bodyComplete(b)
         ? simpleBars(bucketDaily(S.calRange, d=>{
-            const sess=S.sessions.find(x=>x.date===d);
-            return (bmr(b)||0) + stepsKcal(S.steps[d]||0,b) + trainingKcal(sess,b);
+            return dayKcal(d,b).total;       // misma cuenta que la tarjeta
           }, DATA_START), {unit:"kcal", color:theme().chart.secondary})
         : `<p style="font-size:13px;color:var(--text-faint);margin:0">Añade tus datos corporales para ver el gasto calórico.</p>`}
     </div>
@@ -2466,6 +2647,10 @@ function wire(){
   // --- Registrar ---
   if($("log-date")) $("log-date").onchange=e=>{S.date=e.target.value;S.saveState="idle";S.showPicker=false;renderMain();};
   if($("add-ex")) $("add-ex").onclick=()=>{S.showPicker=true;pickerQuery="";pickerCreating=false;renderMain();};
+  if($("reglas-tog")) $("reglas-tog").onclick=()=>{
+    store.set("verReglas", !store.get("verReglas",false));   // se recuerda entre sesiones
+    renderMain();
+  };
 
   // --- Copiar una sesión anterior ---
   if($("copy-open")) $("copy-open").onclick=()=>{S.copying=true;S.showPicker=false;renderMain();};
@@ -2713,6 +2898,45 @@ function wire(){
   };
   if($("goal-inp")) $("goal-inp").onkeydown=e=>{ if(e.key==="Enter") $("goal-save").click(); };
 
+  // --- Cardio ---
+  const cardioDelDia=()=> (S.cardio[S.stepDate]=S.cardio[S.stepDate]||[]);
+  const guardarCardio=()=> saveCardioMonth(S.activeId, monthOf(S.stepDate), S.cardio);
+  const buscarCardio=id=> (S.cardio[S.stepDate]||[]).find(c=>c.id===id);
+
+  all("[data-cadd]",bt=>bt.onclick=()=>{
+    cardioDelDia().push({id:uid(), type:bt.dataset.cadd, dev:true});
+    guardarCardio(); renderMain();
+  });
+  all("[data-cdel]",bt=>bt.onclick=()=>{
+    S.cardio[S.stepDate]=(S.cardio[S.stepDate]||[]).filter(c=>c.id!==bt.dataset.cdel);
+    if(!S.cardio[S.stepDate].length) delete S.cardio[S.stepDate];
+    guardarCardio(); renderMain();
+  });
+  all("[data-cardio]",inp=>{
+    // Mientras escribes: se guarda y se actualiza solo su cabecera, sin perder el foco
+    inp.oninput=()=>{
+      const [id,k]=inp.dataset.cardio.split(":");
+      const c=buscarCardio(id); if(!c) return;
+      c[k]=inp.value;
+      guardarCardio();
+      const cab=inp.closest(".cardio-item")?.querySelector(".cardio-kcal");
+      if(cab){
+        const bb=bodyOf(S.activeId), kc=cardioKcal(c,bb), mn=cardioMinutes(c);
+        cab.textContent=(kc?nf(kc)+" kcal":"—")+(mn?` · ${Math.round(mn)} min`:"");
+      }
+    };
+    // Al salir del campo se recalculan los totales del día
+    inp.onchange=()=>renderMain();
+  });
+  all("[data-cdev]",cb=>cb.onchange=()=>{
+    const c=buscarCardio(cb.dataset.cdev); if(!c) return;
+    c.dev=cb.checked; guardarCardio(); renderMain();
+  });
+  all("[data-clevel]",sel=>sel.onchange=()=>{
+    const c=buscarCardio(sel.dataset.clevel); if(!c) return;
+    c.level=sel.value; guardarCardio(); renderMain();
+  });
+
   // --- Datos corporales ---
   if($("body-edit")) $("body-edit").onclick=()=>{S.editingBody=true;renderMain();};
   if($("body-cancel")) $("body-cancel").onclick=()=>{S.editingBody=false;renderMain();};
@@ -2785,6 +3009,7 @@ function init(){
   }
   S.sessions=loadSessions(S.activeId);
   S.steps=loadSteps(S.activeId);
+  S.cardio=loadCardio(S.activeId);
   S.goal=store.get(`stepsGoal:${S.activeId}`,DEFAULT_GOAL);
   const now=new Date();
   S.openYears[String(now.getFullYear())]=true;
